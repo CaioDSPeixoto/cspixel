@@ -1,0 +1,30 @@
+# Ambientes e caches do Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Artefatos gerados pelo PyInstaller
+build/
+dist/
+*.spec
+
+# Arquivos locais do sistema e do editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Fotografias e saídas de edição não pertencem ao código-fonte
+*.cr2
+*.cr3
+*.nef
+*.arw
+*.dng
+*.orf
+*.rw2
+*.raf
+EditorRAW_*/
