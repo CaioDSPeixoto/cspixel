@@ -20,14 +20,15 @@ class EditorMascara(tk.Toplevel):
 
     def __init__(
         self,
-        parent: tk.Misc,
+        parent: tk.Tk | tk.Toplevel,
         imagem: Image.Image,
         mascara: Image.Image | None,
         ajustes: AjustesMascara,
         ao_confirmar: Callable[[Image.Image, AjustesMascara], None],
+        nome_camada: str = "Camada",
     ) -> None:
         super().__init__(parent)
-        self.title("Editor de máscara local")
+        self.title(f"Editor de camada — {nome_camada}")
         self.geometry("1180x820")
         self.minsize(900, 650)
         self.configure(bg="#17191d")
@@ -43,6 +44,7 @@ class EditorMascara(tk.Toplevel):
         self._ao_confirmar = ao_confirmar
         self._foto_tk: ImageTk.PhotoImage | None = None
         self._escala = 1.0
+        self._zoom = 1.0
         self._deslocamento_x = 0
         self._deslocamento_y = 0
         self._ultimo_ponto: tuple[int, int] | None = None
@@ -54,6 +56,7 @@ class EditorMascara(tk.Toplevel):
         self.var_intensidade = tk.IntVar(value=ajustes.intensidade)
         self.var_suavizacao = tk.IntVar(value=ajustes.suavizacao)
         self.var_visualizar = tk.BooleanVar(value=False)
+        self.var_zoom = tk.StringVar(value="100%")
 
         self._criar_interface()
         self.bind("<Escape>", lambda _evento: self.destroy())
@@ -62,6 +65,13 @@ class EditorMascara(tk.Toplevel):
 
     def _criar_interface(self) -> None:
         """Monta ferramentas, área de desenho e opções de efeito."""
+        self._criar_barra_ferramentas()
+        self._criar_area_desenho()
+        self._criar_opcoes_efeito()
+        self._criar_rodape()
+
+    def _criar_barra_ferramentas(self) -> None:
+        """Cria ferramentas de seleção, pincel e zoom."""
         barra = ttk.Frame(self, padding=8)
         barra.pack(fill="x")
         ttk.Label(barra, text="Ferramenta:").pack(side="left")
@@ -83,6 +93,24 @@ class EditorMascara(tk.Toplevel):
             showvalue=True,
             length=180,
         ).pack(side="left")
+        ttk.Button(
+            barra,
+            text="−",
+            width=3,
+            command=lambda: self._alterar_zoom(fator=0.8),
+        ).pack(side="left", padx=(16, 2))
+        ttk.Label(barra, textvariable=self.var_zoom, width=6).pack(side="left")
+        ttk.Button(
+            barra,
+            text="+",
+            width=3,
+            command=lambda: self._alterar_zoom(fator=1.25),
+        ).pack(side="left", padx=2)
+        ttk.Button(
+            barra,
+            text="Ajustar",
+            command=self._ajustar_zoom,
+        ).pack(side="left", padx=(2, 0))
         ttk.Button(barra, text="Inverter", command=self._inverter).pack(
             side="right",
             padx=4,
@@ -96,20 +124,51 @@ class EditorMascara(tk.Toplevel):
             padx=4,
         )
 
+    def _criar_area_desenho(self) -> None:
+        """Cria o canvas navegável e seus eventos de edição."""
+        quadro_canvas = ttk.Frame(self)
+        quadro_canvas.pack(fill="both", expand=True, padx=8)
         self.canvas = tk.Canvas(
-            self,
+            quadro_canvas,
             bg="#0d0e10",
             highlightthickness=0,
             cursor="crosshair",
         )
-        self.canvas.pack(fill="both", expand=True, padx=8)
+        rolagem_vertical = ttk.Scrollbar(
+            quadro_canvas,
+            orient="vertical",
+            command=self._rolar_barra_vertical,
+        )
+        rolagem_horizontal = ttk.Scrollbar(
+            quadro_canvas,
+            orient="horizontal",
+            command=self._rolar_barra_horizontal,
+        )
+        self.canvas.configure(
+            xscrollcommand=rolagem_horizontal.set,
+            yscrollcommand=rolagem_vertical.set,
+        )
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        rolagem_vertical.grid(row=0, column=1, sticky="ns")
+        rolagem_horizontal.grid(row=1, column=0, sticky="ew")
+        quadro_canvas.rowconfigure(0, weight=1)
+        quadro_canvas.columnconfigure(0, weight=1)
         self.canvas.bind("<Configure>", lambda _evento: self._renderizar())
         self.canvas.bind("<Button-1>", self._pressionar)
         self.canvas.bind("<B1-Motion>", self._arrastar)
         self.canvas.bind("<ButtonRelease-1>", self._soltar)
-        self.canvas.bind("<Double-Button-1>", lambda _evento: self._finalizar_poligono())
+        self.canvas.bind(
+            "<Double-Button-1>", lambda _evento: self._finalizar_poligono()
+        )
         self.canvas.bind("<Button-3>", lambda _evento: self._cancelar_poligono())
+        self.canvas.bind("<Control-MouseWheel>", self._zoom_com_roda)
+        self.canvas.bind("<MouseWheel>", self._rolar_verticalmente)
+        self.canvas.bind("<Shift-MouseWheel>", self._rolar_horizontalmente)
+        self.canvas.bind("<ButtonPress-2>", self._iniciar_movimento)
+        self.canvas.bind("<B2-Motion>", self._mover_imagem)
 
+    def _criar_opcoes_efeito(self) -> None:
+        """Cria os controles do efeito aplicado à camada."""
         opcoes = ttk.Frame(self, padding=8)
         opcoes.pack(fill="x")
         ttk.Label(opcoes, text="Efeito:").grid(row=0, column=0, sticky="w")
@@ -154,13 +213,16 @@ class EditorMascara(tk.Toplevel):
         ).grid(row=0, column=6, padx=(12, 0))
         opcoes.columnconfigure(1, weight=1)
 
+    def _criar_rodape(self) -> None:
+        """Cria instruções e ações de confirmação da camada."""
         rodape = ttk.Frame(self, padding=(8, 0, 8, 8))
         rodape.pack(fill="x")
         ttk.Label(
             rodape,
             text=(
                 "Pincel adiciona; Borracha remove; Contorno usa cliques e "
-                "finaliza com Enter ou clique duplo. Botão direito cancela o contorno."
+                "finaliza com Enter ou clique duplo. Ctrl + roda aplica zoom; "
+                "botão do meio move a foto."
             ),
         ).pack(side="left")
         ttk.Button(rodape, text="Cancelar", command=self.destroy).pack(
@@ -188,36 +250,114 @@ class EditorMascara(tk.Toplevel):
 
     def _renderizar(self) -> None:
         """Exibe a foto, a máscara ou o efeito local calculado."""
-        largura_canvas = max(200, self.canvas.winfo_width())
-        altura_canvas = max(200, self.canvas.winfo_height())
-        escala = min(
-            largura_canvas / self._imagem.width,
-            altura_canvas / self._imagem.height,
-        )
-        self._escala = max(escala, 0.01)
-        largura = max(1, int(self._imagem.width * self._escala))
-        altura = max(1, int(self._imagem.height * self._escala))
-        self._deslocamento_x = (largura_canvas - largura) // 2
-        self._deslocamento_y = (altura_canvas - altura) // 2
-
-        if self.var_visualizar.get():
-            exibicao = aplicar_mascara_local(
+        largura_canvas, altura_canvas, largura, altura = self._preparar_geometria()
+        exibicao = (
+            aplicar_mascara_local(
                 imagem=self._imagem,
                 mascara=self._mascara,
                 ajustes=self._ajustes_atuais(),
             )
-        else:
-            exibicao = self._sobrepor_mascara()
-        exibicao = exibicao.resize((largura, altura), Image.Resampling.LANCZOS)
-        self._foto_tk = ImageTk.PhotoImage(exibicao)
+            if self.var_visualizar.get()
+            else self._sobrepor_mascara()
+        )
+        recorte = self._recortar_area_visivel(
+            exibicao=exibicao,
+            largura_canvas=largura_canvas,
+            altura_canvas=altura_canvas,
+            largura_imagem=largura,
+            altura_imagem=altura,
+        )
+        if recorte is None:
+            return
+        imagem_visivel, posicao_x, posicao_y = recorte
+        self._foto_tk = ImageTk.PhotoImage(imagem_visivel)
         self.canvas.delete("all")
         self.canvas.create_image(
-            self._deslocamento_x,
-            self._deslocamento_y,
+            posicao_x,
+            posicao_y,
             image=self._foto_tk,
             anchor="nw",
         )
         self._desenhar_poligono_temporario()
+
+    def _preparar_geometria(self) -> tuple[int, int, int, int]:
+        """Calcula escala, deslocamento e região navegável da imagem."""
+        largura_canvas = max(200, self.canvas.winfo_width())
+        altura_canvas = max(200, self.canvas.winfo_height())
+        escala_encaixe = min(
+            largura_canvas / self._imagem.width,
+            altura_canvas / self._imagem.height,
+        )
+        self._escala = max(escala_encaixe * self._zoom, 0.01)
+        largura = max(1, int(self._imagem.width * self._escala))
+        altura = max(1, int(self._imagem.height * self._escala))
+        self._deslocamento_x = max((largura_canvas - largura) // 2, 0)
+        self._deslocamento_y = max((altura_canvas - altura) // 2, 0)
+        self.canvas.configure(
+            scrollregion=(
+                0,
+                0,
+                max(largura_canvas, largura),
+                max(altura_canvas, altura),
+            ),
+        )
+        return largura_canvas, altura_canvas, largura, altura
+
+    def _recortar_area_visivel(
+        self,
+        exibicao: Image.Image,
+        largura_canvas: int,
+        altura_canvas: int,
+        largura_imagem: int,
+        altura_imagem: int,
+    ) -> tuple[Image.Image, int, int] | None:
+        """Amplia somente os pixels visíveis para limitar o uso de memória."""
+        inicio_visivel_x = max(
+            self._deslocamento_x,
+            int(self.canvas.canvasx(0)),
+        )
+        inicio_visivel_y = max(
+            self._deslocamento_y,
+            int(self.canvas.canvasy(0)),
+        )
+        fim_visivel_x = min(
+            self._deslocamento_x + largura_imagem,
+            int(self.canvas.canvasx(largura_canvas)) + 1,
+        )
+        fim_visivel_y = min(
+            self._deslocamento_y + altura_imagem,
+            int(self.canvas.canvasy(altura_canvas)) + 1,
+        )
+        origem_x = max(
+            0,
+            int((inicio_visivel_x - self._deslocamento_x) / self._escala),
+        )
+        origem_y = max(
+            0,
+            int((inicio_visivel_y - self._deslocamento_y) / self._escala),
+        )
+        fim_x = min(
+            self._imagem.width,
+            int((fim_visivel_x - self._deslocamento_x) / self._escala) + 2,
+        )
+        fim_y = min(
+            self._imagem.height,
+            int((fim_visivel_y - self._deslocamento_y) / self._escala) + 2,
+        )
+        if fim_x <= origem_x or fim_y <= origem_y:
+            return None
+        recorte = exibicao.crop((origem_x, origem_y, fim_x, fim_y))
+        largura_recorte = max(1, int(recorte.width * self._escala))
+        altura_recorte = max(1, int(recorte.height * self._escala))
+        recorte = recorte.resize(
+            (largura_recorte, altura_recorte),
+            Image.Resampling.LANCZOS,
+        )
+        return (
+            recorte,
+            self._deslocamento_x + int(origem_x * self._escala),
+            self._deslocamento_y + int(origem_y * self._escala),
+        )
 
     def _sobrepor_mascara(self) -> Image.Image:
         """Sobrepõe vermelho translúcido à região selecionada."""
@@ -229,13 +369,87 @@ class EditorMascara(tk.Toplevel):
 
     def _canvas_para_imagem(self, x: int, y: int) -> tuple[int, int] | None:
         """Converte coordenadas do canvas para coordenadas da imagem."""
-        imagem_x = int((x - self._deslocamento_x) / self._escala)
-        imagem_y = int((y - self._deslocamento_y) / self._escala)
+        x_canvas = self.canvas.canvasx(x)
+        y_canvas = self.canvas.canvasy(y)
+        imagem_x = int((x_canvas - self._deslocamento_x) / self._escala)
+        imagem_y = int((y_canvas - self._deslocamento_y) / self._escala)
         if not (0 <= imagem_x < self._imagem.width):
             return None
         if not (0 <= imagem_y < self._imagem.height):
             return None
         return imagem_x, imagem_y
+
+    def _alterar_zoom(self, fator: float) -> None:
+        """Altera o zoom preservando o centro visível da fotografia."""
+        largura_canvas = max(1, self.canvas.winfo_width())
+        altura_canvas = max(1, self.canvas.winfo_height())
+        centro = self._canvas_para_imagem(
+            x=largura_canvas // 2,
+            y=altura_canvas // 2,
+        )
+        if centro is None:
+            centro = (self._imagem.width // 2, self._imagem.height // 2)
+        novo_zoom = max(1.0, min(4.0, self._zoom * fator))
+        if abs(novo_zoom - self._zoom) < 0.001:
+            return
+        self._zoom = novo_zoom
+        self.var_zoom.set(f"{round(self._zoom * 100)}%")
+        self._renderizar()
+        largura_total = max(largura_canvas, int(self._imagem.width * self._escala))
+        altura_total = max(altura_canvas, int(self._imagem.height * self._escala))
+        destino_x = centro[0] * self._escala - largura_canvas / 2
+        destino_y = centro[1] * self._escala - altura_canvas / 2
+        self.canvas.xview_moveto(max(0.0, destino_x / largura_total))
+        self.canvas.yview_moveto(max(0.0, destino_y / altura_total))
+        self._renderizar()
+
+    def _ajustar_zoom(self) -> None:
+        """Retorna à visualização completa da fotografia."""
+        self._zoom = 1.0
+        self.var_zoom.set("100%")
+        self._renderizar()
+        self.canvas.xview_moveto(0.0)
+        self.canvas.yview_moveto(0.0)
+        self._renderizar()
+
+    def _zoom_com_roda(self, evento: tk.Event[tk.Misc]) -> str:
+        """Aplica zoom usando Ctrl e a roda do mouse."""
+        fator = 1.25 if evento.delta > 0 else 0.8
+        self._alterar_zoom(fator=fator)
+        return "break"
+
+    def _rolar_verticalmente(self, evento: tk.Event[tk.Misc]) -> str:
+        """Move verticalmente uma fotografia ampliada."""
+        unidades = -1 if evento.delta > 0 else 1
+        self.canvas.yview_scroll(unidades, "units")
+        self._renderizar()
+        return "break"
+
+    def _rolar_horizontalmente(self, evento: tk.Event[tk.Misc]) -> str:
+        """Move horizontalmente uma fotografia ampliada."""
+        unidades = -1 if evento.delta > 0 else 1
+        self.canvas.xview_scroll(unidades, "units")
+        self._renderizar()
+        return "break"
+
+    def _rolar_barra_vertical(self, *argumentos: str) -> None:
+        """Move a visualização pela barra vertical e redesenha o recorte."""
+        self.canvas.yview(*argumentos)
+        self._renderizar()
+
+    def _rolar_barra_horizontal(self, *argumentos: str) -> None:
+        """Move a visualização pela barra horizontal e redesenha o recorte."""
+        self.canvas.xview(*argumentos)
+        self._renderizar()
+
+    def _iniciar_movimento(self, evento: tk.Event[tk.Misc]) -> None:
+        """Marca o ponto inicial para arrastar a fotografia ampliada."""
+        self.canvas.scan_mark(evento.x, evento.y)
+
+    def _mover_imagem(self, evento: tk.Event[tk.Misc]) -> None:
+        """Move a área visível com o botão central pressionado."""
+        self.canvas.scan_dragto(evento.x, evento.y, gain=1)
+        self._renderizar()
 
     def _pressionar(self, evento: tk.Event[tk.Canvas]) -> None:
         """Inicia uma pincelada ou adiciona um vértice ao contorno."""

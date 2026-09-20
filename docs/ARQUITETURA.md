@@ -45,14 +45,17 @@ build.ps1 ─────── testes, empacotamento e metadados do release
 3. `presets.preset_recomendado()` define o ponto de partida.
 4. A interface guarda um `AjustesFoto` para cada `FotoProjeto`.
 5. O preview revela o RAW em meia resolução e aplica os ajustes em memória.
-6. Uma máscara opcional é redimensionada e combinada ao efeito local.
-7. A exportação revela novamente em resolução total.
-8. `nome_destino_seguro()` impede a substituição de uma exportação existente.
-9. O RAW nunca é aberto para escrita.
+6. Cada `CamadaMascara` é redimensionada e aplicada na ordem exibida na interface.
+7. Cada camada mantém nome, seleção e efeito próprios.
+8. A exportação revela novamente em resolução total e reaplica todas as camadas.
+9. `nome_destino_seguro()` impede a substituição de uma exportação existente.
+10. O RAW nunca é aberto para escrita.
 
 ## Concorrência
 
-Revelação e exportação não executam na thread da interface. O `ThreadPoolExecutor` realiza o trabalho pesado e uma fila entrega os resultados à thread principal do Tkinter. Nenhuma tarefa de fundo acessa widgets diretamente.
+Revelação e exportação não executam na thread da interface. O `ThreadPoolExecutor` realiza o trabalho pesado e uma fila entrega os resultados à thread principal do Tkinter. Nenhuma tarefa de fundo acessa widgets diretamente. Previews obsoletos são cancelados quando possível. A exportação recebe `ItemExportacao` imutável, evitando que alterações posteriores da interface mudem um lote em andamento.
+
+No editor de máscara, o zoom mantém uma região virtual completa, mas só amplia os pixels visíveis no canvas. Isso evita criar bitmaps gigantes em ampliações de 400%.
 
 ## Pontos de extensão
 

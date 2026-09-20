@@ -16,11 +16,13 @@ Ao baixar o código-fonte pelo GitHub, gere o executável com `build.ps1` confor
 - Exibe o original revelado e o resultado editado lado a lado.
 - Permite alterar exposição, contraste, realces, sombras, saturação, temperatura, redução de ruído e nitidez.
 - Mantém ajustes individuais para cada foto.
-- Permite criar máscaras por pincel, borracha ou contorno.
+- Permite criar várias camadas locais por pincel, borracha ou contorno.
+- Permite nomear, editar, renomear e excluir cada camada separadamente.
 - Aplica preto e branco, saturação ou desfoque somente dentro ou fora da seleção.
 - Copia os ajustes da foto atual para uma seleção ou para todas as fotos.
 - Exporta em JPEG ou PNG, sempre para uma pasta nova.
-- Exporta JPEG sempre em qualidade 98 e cores 4:4:4; PNG permanece sem perdas.
+- Exporta JPEG sempre em qualidade máxima 100 e cores 4:4:4; PNG permanece sem perdas.
+- Incorpora o perfil de cor sRGB nas imagens exportadas.
 - Nunca altera ou substitui o RAW original.
 
 ## Uso
@@ -30,21 +32,22 @@ Ao baixar o código-fonte pelo GitHub, gere o executável com `build.ps1` confor
 3. Escolha uma foto na lista à esquerda.
 4. Selecione um preset e use os controles manuais.
 5. Confira o resultado no painel **Preview dos ajustes**.
-6. Use **Copiar para fotos selecionadas** ou **Aplicar estes ajustes a todas**, se desejar.
-7. Escolha a pasta de saída.
-8. Exporte as fotos selecionadas ou todas.
+6. Em **Camadas locais**, crie e gerencie seleções com efeitos independentes.
+7. Use **Copiar para fotos selecionadas** ou **Aplicar estes ajustes a todas**, se desejar.
+8. Escolha a pasta de saída.
+9. Exporte as fotos selecionadas ou todas.
 
 O programa cria automaticamente uma subpasta com nome semelhante a `EditorRAW_20260920_153000`. Se um nome de imagem já existir, ele acrescenta uma numeração em vez de substituir o arquivo.
 
 ## Presets incluídos
 
-- Natural equilibrado
-- Retrato suave
-- ISO alto — Limpo
-- Noite e palco
+- Natural
+- Retrato
+- Menos ruído
+- Fotos noturnas
 - Cores vivas
 - Preto e branco
-- Neutro
+- Sem ajustes
 
 ## Desenvolvimento
 

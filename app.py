@@ -1,4 +1,4 @@
-"""Interface gráfica do Editor RAW não destrutivo."""
+"""Interface gráfica do Editor RAW."""
 
 from __future__ import annotations
 
@@ -10,16 +10,23 @@ from pathlib import Path
 import queue
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from typing import Callable
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Callable, cast
 
 from PIL import Image, ImageTk
 
 from editor_mascara import EditorMascara
-from modelos import AjustesFoto, AjustesMascara, FotoProjeto
+from modelos import (
+    AjustesFoto,
+    AjustesMascara,
+    CamadaMascara,
+    FotoProjeto,
+    ItemExportacao,
+)
 from presets import AJUSTES_PADRAO, preset_recomendado
 from processamento import (
     EXTENSOES_SUPORTADAS,
+    FormatoExportacao,
     aplicar_edicao_completa,
     exportar_foto,
     faixa_iso,
@@ -44,9 +51,7 @@ class AplicativoEditorRaw(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title(
-            f"Editor RAW {VERSAO_APLICATIVO} — edição não destrutiva",
-        )
+        self.title(f"Editor RAW {VERSAO_APLICATIVO}")
         self.geometry("1480x900")
         self.minsize(1180, 720)
         try:
@@ -57,17 +62,22 @@ class AplicativoEditorRaw(tk.Tk):
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._fotos: dict[Path, FotoProjeto] = {}
         self._ajustes: dict[Path, AjustesFoto] = {}
-        self._mascaras: dict[Path, Image.Image] = {}
-        self._ajustes_mascara: dict[Path, AjustesMascara] = {}
+        self._camadas_mascara: dict[Path, list[CamadaMascara]] = {}
         self._item_para_caminho: dict[str, Path] = {}
         self._foto_atual: Path | None = None
         self._cache_preview: OrderedDict[Path, Image.Image] = OrderedDict()
         self._imagem_tk_original: ImageTk.PhotoImage | None = None
         self._imagem_tk_editada: ImageTk.PhotoImage | None = None
         self._geracao_preview = 0
+        self._futuro_preview: (
+            Future[tuple[Image.Image, Image.Image, Image.Image]] | None
+        ) = None
         self._temporizador_preview: str | None = None
+        self._temporizador_redimensionamento: str | None = None
+        self._ultima_area_preview = (0, 0)
         self._carregando_controles = False
         self._cancelar_exportacao = threading.Event()
+        self._exportacao_ativa = False
         self._fila_interface: queue.Queue[
             tuple[Callable[..., None], tuple[object, ...]]
         ] = queue.Queue()
@@ -102,7 +112,7 @@ class AplicativoEditorRaw(tk.Tk):
 
     def _criar_variaveis(self) -> None:
         """Inicializa as variáveis vinculadas aos controles."""
-        self.var_preset = tk.StringVar(value="Natural equilibrado")
+        self.var_preset = tk.StringVar(value="Natural")
         self.var_exposicao = tk.DoubleVar(value=0.0)
         self.var_contraste = tk.IntVar(value=6)
         self.var_realces = tk.IntVar(value=-12)
@@ -112,12 +122,17 @@ class AplicativoEditorRaw(tk.Tk):
         self.var_ruido = tk.IntVar(value=52)
         self.var_nitidez = tk.IntVar(value=38)
         self.var_formato = tk.StringVar(value="JPEG")
+        self.var_descricao_formato = tk.StringVar(
+            value="Qualidade máxima (100), cores 4:4:4 e perfil sRGB.",
+        )
         self.var_status = tk.StringVar(
             value="Selecione arquivos RAW para começar.",
         )
         self.var_saida = tk.StringVar(value="Pasta de saída ainda não escolhida")
         self.var_contagem = tk.StringVar(value="0 fotos")
-        self.var_status_mascara = tk.StringVar(value="Nenhuma máscara nesta foto")
+        self.var_status_mascara = tk.StringVar(value="Nenhuma camada nesta foto")
+        self.var_progresso_exportacao = tk.StringVar(value="Preparando exportação…")
+        self.var_arquivo_exportacao = tk.StringVar(value="")
 
     def _configurar_estilo(self) -> None:
         """Aplica um tema escuro e legível aos componentes."""
@@ -238,7 +253,7 @@ class AplicativoEditorRaw(tk.Tk):
         painel_preview = ttk.Frame(principal, style="Painel.TFrame", padding=10)
         painel_ajustes = ttk.Frame(principal, style="Painel.TFrame", padding=10)
         principal.add(painel_arquivos, weight=1)
-        principal.add(painel_preview, weight=4)
+        principal.add(painel_preview, weight=7)
         principal.add(painel_ajustes, weight=2)
         self._criar_painel_arquivos(painel=painel_arquivos)
         self._criar_painel_preview(painel=painel_preview)
@@ -253,6 +268,65 @@ class AplicativoEditorRaw(tk.Tk):
             textvariable=self.var_status,
             style="Painel.TLabel",
         ).pack(side="left", fill="x", expand=True)
+        self._criar_bloqueio_exportacao()
+
+    def _criar_bloqueio_exportacao(self) -> None:
+        """Cria a tela modal exibida durante a exportação."""
+        self.bloqueio_exportacao = tk.Frame(
+            self,
+            bg="#101216",
+            cursor="watch",
+        )
+        cartao = tk.Frame(
+            self.bloqueio_exportacao,
+            bg=self.COR_PAINEL,
+            highlightbackground=self.COR_DESTAQUE,
+            highlightthickness=2,
+            padx=38,
+            pady=32,
+        )
+        cartao.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(
+            cartao,
+            text="Exportando fotografias",
+            bg=self.COR_PAINEL,
+            fg=self.COR_TEXTO,
+            font=("Segoe UI Semibold", 18),
+        ).pack()
+        tk.Label(
+            cartao,
+            textvariable=self.var_progresso_exportacao,
+            bg=self.COR_PAINEL,
+            fg=self.COR_TEXTO,
+            font=("Segoe UI", 12),
+        ).pack(pady=(16, 4))
+        tk.Label(
+            cartao,
+            textvariable=self.var_arquivo_exportacao,
+            bg=self.COR_PAINEL,
+            fg=self.COR_SECUNDARIA,
+            font=("Segoe UI", 10),
+            wraplength=480,
+        ).pack(pady=(0, 14))
+        self.barra_progresso_modal = ttk.Progressbar(
+            cartao,
+            mode="determinate",
+            length=460,
+        )
+        self.barra_progresso_modal.pack(fill="x")
+        tk.Label(
+            cartao,
+            text="A interface fica bloqueada para manter o lote consistente.",
+            bg=self.COR_PAINEL,
+            fg=self.COR_SECUNDARIA,
+            font=("Segoe UI", 9),
+        ).pack(pady=(12, 16))
+        self.botao_cancelar_modal = ttk.Button(
+            cartao,
+            text="Cancelar exportação",
+            command=self._solicitar_cancelamento,
+        )
+        self.botao_cancelar_modal.pack()
 
     def _criar_painel_arquivos(self, painel: ttk.Frame) -> None:
         """Cria a lista agrupada por ISO."""
@@ -335,6 +409,29 @@ class AplicativoEditorRaw(tk.Tk):
             text="Os ajustes aparecerão aqui",
         )
         self.preview_editada.pack(fill="both", expand=True, padx=(4, 0))
+        self.preview_editada.bind("<Configure>", self._preview_redimensionado)
+
+        self.sobreposicao_preview = tk.Frame(
+            self.preview_editada,
+            bg="#20242b",
+            highlightbackground=self.COR_DESTAQUE,
+            highlightthickness=1,
+            padx=18,
+            pady=14,
+        )
+        tk.Label(
+            self.sobreposicao_preview,
+            text="Atualizando prévia…",
+            bg="#20242b",
+            fg=self.COR_TEXTO,
+            font=("Segoe UI Semibold", 11),
+        ).pack(pady=(0, 8))
+        self.progresso_preview = ttk.Progressbar(
+            self.sobreposicao_preview,
+            mode="indeterminate",
+            length=180,
+        )
+        self.progresso_preview.pack()
 
         navegacao = ttk.Frame(painel, style="Painel.TFrame")
         navegacao.pack(fill="x", pady=(8, 0))
@@ -375,10 +472,20 @@ class AplicativoEditorRaw(tk.Tk):
         canvas.configure(yscrollcommand=rolagem.set)
         canvas.pack(side="left", fill="both", expand=True)
         rolagem.pack(side="right", fill="y")
+        self.canvas_ajustes = canvas
+        self.conteudo_ajustes = conteudo
+        self.bind_all("<MouseWheel>", self._rolar_ajustes, add="+")
 
-        ttk.Label(conteudo, text="PRESETS", style="Titulo.TLabel").pack(anchor="w")
+        self._criar_secao_presets(painel=conteudo)
+        self._criar_secao_ajustes_manuais(painel=conteudo)
+        self._criar_secao_camadas(painel=conteudo)
+        self._criar_secao_exportacao(painel=conteudo)
+
+    def _criar_secao_presets(self, painel: ttk.Frame) -> None:
+        """Cria a seleção de presets da fotografia atual."""
+        ttk.Label(painel, text="PRESETS", style="Titulo.TLabel").pack(anchor="w")
         seletor = ttk.Combobox(
-            conteudo,
+            painel,
             textvariable=self.var_preset,
             values=list(AJUSTES_PADRAO),
             state="readonly",
@@ -386,13 +493,15 @@ class AplicativoEditorRaw(tk.Tk):
         seletor.pack(fill="x", pady=(7, 12))
         seletor.bind("<<ComboboxSelected>>", self._preset_alterado)
 
+    def _criar_secao_ajustes_manuais(self, painel: ttk.Frame) -> None:
+        """Cria os controles globais e ações de cópia de ajustes."""
         ttk.Label(
-            conteudo,
+            painel,
             text="AJUSTES MANUAIS",
             style="Titulo.TLabel",
         ).pack(anchor="w", pady=(0, 5))
         self._criar_controle(
-            painel=conteudo,
+            painel=painel,
             titulo="Exposição",
             variavel=self.var_exposicao,
             minimo=-2.0,
@@ -409,7 +518,7 @@ class AplicativoEditorRaw(tk.Tk):
             ("Nitidez", self.var_nitidez, 0, 100),
         ):
             self._criar_controle(
-                painel=conteudo,
+                painel=painel,
                 titulo=titulo,
                 variavel=variavel,
                 minimo=minimo,
@@ -418,92 +527,166 @@ class AplicativoEditorRaw(tk.Tk):
             )
 
         ttk.Button(
-            conteudo,
+            painel,
             text="Restaurar preset desta foto",
             command=self._restaurar_preset,
         ).pack(fill="x", pady=(8, 4))
         ttk.Button(
-            conteudo,
+            painel,
             text="Copiar para fotos selecionadas",
             command=self._copiar_para_selecionadas,
         ).pack(fill="x", pady=4)
         ttk.Button(
-            conteudo,
+            painel,
             text="Aplicar estes ajustes a todas",
             command=self._copiar_para_todas,
         ).pack(fill="x", pady=4)
 
-        ttk.Separator(conteudo).pack(fill="x", pady=14)
+    def _criar_secao_camadas(self, painel: ttk.Frame) -> None:
+        """Cria a lista e as ações de camadas locais."""
+        ttk.Separator(painel).pack(fill="x", pady=14)
         ttk.Label(
-            conteudo,
-            text="MÁSCARA LOCAL",
+            painel,
+            text="CAMADAS LOCAIS",
             style="Titulo.TLabel",
         ).pack(anchor="w")
         ttk.Label(
-            conteudo,
+            painel,
             textvariable=self.var_status_mascara,
             style="Secundario.TLabel",
             wraplength=270,
         ).pack(fill="x", pady=(5, 7))
-        ttk.Button(
-            conteudo,
-            text="Editar máscara com pincel ou contorno",
-            command=self._abrir_editor_mascara,
-        ).pack(fill="x", pady=3)
-        ttk.Button(
-            conteudo,
-            text="Remover máscara desta foto",
-            command=self._remover_mascara_atual,
-        ).pack(fill="x", pady=3)
+        quadro_lista_camadas = ttk.Frame(painel, style="Painel.TFrame")
+        quadro_lista_camadas.pack(fill="x", pady=(0, 6))
+        self.lista_camadas = tk.Listbox(
+            quadro_lista_camadas,
+            height=5,
+            exportselection=False,
+            bg=self.COR_CAMPO,
+            fg=self.COR_TEXTO,
+            selectbackground=self.COR_DESTAQUE,
+            selectforeground="white",
+            highlightthickness=0,
+            activestyle="none",
+        )
+        rolagem_camadas = ttk.Scrollbar(
+            quadro_lista_camadas,
+            orient="vertical",
+            command=self.lista_camadas.yview,
+        )
+        self.lista_camadas.configure(yscrollcommand=rolagem_camadas.set)
+        self.lista_camadas.pack(side="left", fill="x", expand=True)
+        rolagem_camadas.pack(side="right", fill="y")
+        self.lista_camadas.bind("<<ListboxSelect>>", self._camada_selecionada)
+        self.lista_camadas.bind(
+            "<Double-Button-1>",
+            lambda _evento: self._editar_camada_selecionada(),
+        )
 
-        ttk.Separator(conteudo).pack(fill="x", pady=14)
+        botoes_camadas = ttk.Frame(painel, style="Painel.TFrame")
+        botoes_camadas.pack(fill="x")
+        ttk.Button(
+            botoes_camadas,
+            text="Nova camada",
+            command=self._nova_camada,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 3), pady=3)
+        ttk.Button(
+            botoes_camadas,
+            text="Editar",
+            command=self._editar_camada_selecionada,
+        ).grid(row=0, column=1, sticky="ew", padx=(3, 0), pady=3)
+        ttk.Button(
+            botoes_camadas,
+            text="Renomear",
+            command=self._renomear_camada_selecionada,
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=3)
+        ttk.Button(
+            botoes_camadas,
+            text="Excluir",
+            command=self._excluir_camada_selecionada,
+        ).grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=3)
+        botoes_camadas.columnconfigure(0, weight=1)
+        botoes_camadas.columnconfigure(1, weight=1)
+
+    def _criar_secao_exportacao(self, painel: ttk.Frame) -> None:
+        """Cria o formato, as ações e o cancelamento da exportação."""
+        ttk.Separator(painel).pack(fill="x", pady=14)
         ttk.Label(
-            conteudo,
+            painel,
             text="EXPORTAÇÃO",
             style="Titulo.TLabel",
         ).pack(anchor="w")
-        linha_formato = ttk.Frame(conteudo, style="Painel.TFrame")
+        linha_formato = ttk.Frame(painel, style="Painel.TFrame")
         linha_formato.pack(fill="x", pady=(8, 3))
         ttk.Label(
             linha_formato,
             text="Formato",
             style="Painel.TLabel",
         ).pack(side="left")
-        ttk.Combobox(
+        seletor_formato = ttk.Combobox(
             linha_formato,
             textvariable=self.var_formato,
             values=("JPEG", "PNG"),
             state="readonly",
             width=8,
-        ).pack(side="right")
+        )
+        seletor_formato.pack(side="right")
+        seletor_formato.bind("<<ComboboxSelected>>", self._formato_alterado)
         ttk.Label(
-            conteudo,
-            text="JPEG sempre em qualidade excelente (98, cores 4:4:4).",
+            painel,
+            textvariable=self.var_descricao_formato,
             style="Secundario.TLabel",
             wraplength=270,
         ).pack(fill="x", pady=(6, 2))
-        ttk.Button(
-            conteudo,
+        self.botao_exportar_selecionadas = ttk.Button(
+            painel,
             text="Exportar selecionadas",
             command=self._exportar_selecionadas,
-        ).pack(fill="x", pady=(10, 4))
-        ttk.Button(
-            conteudo,
+        )
+        self.botao_exportar_selecionadas.pack(fill="x", pady=(10, 4))
+        self.botao_exportar_todas = ttk.Button(
+            painel,
             text="Exportar todas",
             style="Destaque.TButton",
             command=self._exportar_todas,
-        ).pack(fill="x", pady=4)
-        ttk.Button(
-            conteudo,
+        )
+        self.botao_exportar_todas.pack(fill="x", pady=4)
+        self.botao_cancelar_exportacao = ttk.Button(
+            painel,
             text="Cancelar exportação",
             command=self._solicitar_cancelamento,
-        ).pack(fill="x", pady=4)
+            state="disabled",
+        )
+        self.botao_cancelar_exportacao.pack(fill="x", pady=4)
+
+    def _rolar_ajustes(self, evento: tk.Event[tk.Misc]) -> str | None:
+        """Rola os ajustes quando o ponteiro está sobre esse painel."""
+        inicio_x = self.canvas_ajustes.winfo_rootx()
+        inicio_y = self.canvas_ajustes.winfo_rooty()
+        fim_x = inicio_x + self.canvas_ajustes.winfo_width()
+        fim_y = inicio_y + self.canvas_ajustes.winfo_height()
+        ponteiro_dentro = (
+            inicio_x <= evento.x_root <= fim_x and inicio_y <= evento.y_root <= fim_y
+        )
+        if not ponteiro_dentro:
+            return None
+        unidades = -1 if evento.delta > 0 else 1
+        self.canvas_ajustes.yview_scroll(unidades, "units")
+        return "break"
+
+    def _formato_alterado(self, _evento: tk.Event[tk.Misc]) -> None:
+        """Explica somente o formato de exportação selecionado."""
+        if self.var_formato.get() == "PNG":
+            descricao = "Sem perdas, resolução total e perfil sRGB."
+        else:
+            descricao = "Qualidade máxima (100), cores 4:4:4 e perfil sRGB."
+        self.var_descricao_formato.set(descricao)
 
     def _criar_controle(
         self,
         painel: ttk.Frame,
         titulo: str,
-        variavel: tk.Variable,
+        variavel: tk.IntVar | tk.DoubleVar,
         minimo: float,
         maximo: float,
         resolucao: float,
@@ -526,11 +709,7 @@ class AplicativoEditorRaw(tk.Tk):
             activebackground=self.COR_DESTAQUE,
             highlightthickness=0,
             troughcolor=self.COR_CAMPO,
-            command=(
-                self._controle_alterado
-                if altera_preview
-                else None
-            ),
+            command=self._controle_alterado if altera_preview else "",
         )
         escala.pack(fill="x")
 
@@ -586,9 +765,12 @@ class AplicativoEditorRaw(tk.Tk):
         """Adiciona à interface as fotos analisadas."""
         try:
             fotos = futuro.result()
-        except Exception as excecao:
+        except Exception:
             logger.exception("[IMPORTACAO] Falha ao analisar arquivos")
-            messagebox.showerror("Falha ao importar", str(excecao))
+            messagebox.showerror(
+                "Falha ao importar",
+                "Não foi possível analisar os arquivos selecionados.",
+            )
             self.var_status.set("Falha ao analisar os arquivos.")
             return
         for foto in fotos:
@@ -619,7 +801,9 @@ class AplicativoEditorRaw(tk.Tk):
         for foto in self._fotos.values():
             grupos[faixa_iso(iso=foto.iso)].append(foto)
         for nome_grupo in ordem:
-            fotos = sorted(grupos[nome_grupo], key=lambda item: item.caminho.name.lower())
+            fotos = sorted(
+                grupos[nome_grupo], key=lambda item: item.caminho.name.lower()
+            )
             if not fotos:
                 continue
             grupo = self.arvore.insert(
@@ -665,7 +849,7 @@ class AplicativoEditorRaw(tk.Tk):
             text=f"ISO {foto.iso or 'não identificado'} · {faixa_iso(iso=foto.iso)}",
         )
         self._carregar_controles(ajustes=self._ajustes[caminho])
-        self._atualizar_status_mascara()
+        self._atualizar_lista_camadas()
         self._agendar_preview_imediato()
 
     def _carregar_controles(self, ajustes: AjustesFoto) -> None:
@@ -725,82 +909,277 @@ class AplicativoEditorRaw(tk.Tk):
         self._carregar_controles(ajustes=ajustes)
         self._agendar_preview_imediato()
 
-    def _abrir_editor_mascara(self) -> None:
-        """Abre o editor de máscara para a fotografia atual."""
-        if self._foto_atual is None:
-            messagebox.showinfo("Máscara local", "Selecione uma foto primeiro.")
+    def _nova_camada(self) -> None:
+        """Solicita um nome e abre o editor para uma nova camada."""
+        caminho = self._foto_atual
+        if caminho is None:
+            messagebox.showinfo("Camadas locais", "Selecione uma foto primeiro.")
             return
-        imagem = self._cache_preview.get(self._foto_atual)
+        imagem = self._cache_preview.get(caminho)
         if imagem is None:
-            self.var_status.set("Aguarde o preview terminar antes de editar a máscara.")
+            self.var_status.set("Aguarde o preview terminar para criar uma camada.")
             self._agendar_preview_imediato()
             return
-        ajustes = self._ajustes_mascara.get(
-            self._foto_atual,
-            AjustesMascara(),
+        numero = len(self._camadas_mascara.get(caminho, [])) + 1
+        nome = simpledialog.askstring(
+            "Nova camada",
+            "Nome da camada:",
+            initialvalue=f"Camada {numero}",
+            parent=self,
         )
+        nome = nome.strip() if nome else ""
+        if not nome or not self._nome_camada_disponivel(caminho=caminho, nome=nome):
+            return
         EditorMascara(
             parent=self,
             imagem=imagem,
-            mascara=self._mascaras.get(self._foto_atual),
-            ajustes=ajustes,
-            ao_confirmar=self._salvar_mascara_atual,
+            mascara=None,
+            ajustes=AjustesMascara(),
+            ao_confirmar=lambda mascara, ajustes: self._adicionar_camada(
+                caminho=caminho,
+                nome=nome,
+                mascara=mascara,
+                ajustes=ajustes,
+            ),
+            nome_camada=nome,
         )
 
-    def _salvar_mascara_atual(
+    def _editar_camada_selecionada(self) -> None:
+        """Abre somente a camada selecionada para edição."""
+        caminho = self._foto_atual
+        indice = self._indice_camada_selecionada()
+        if caminho is None or indice is None:
+            messagebox.showinfo("Camadas locais", "Selecione uma camada para editar.")
+            return
+        imagem = self._cache_preview.get(caminho)
+        if imagem is None:
+            self.var_status.set("Aguarde o preview terminar para editar a camada.")
+            self._agendar_preview_imediato()
+            return
+        camada = self._camadas_mascara[caminho][indice]
+        EditorMascara(
+            parent=self,
+            imagem=imagem,
+            mascara=camada.mascara,
+            ajustes=camada.ajustes,
+            ao_confirmar=lambda mascara, ajustes: self._salvar_camada(
+                caminho=caminho,
+                indice=indice,
+                mascara=mascara,
+                ajustes=ajustes,
+            ),
+            nome_camada=camada.nome,
+        )
+
+    def _adicionar_camada(
         self,
+        caminho: Path,
+        nome: str,
         mascara: Image.Image,
         ajustes: AjustesMascara,
     ) -> None:
-        """Guarda a máscara da foto atual e atualiza o preview."""
-        if self._foto_atual is None:
+        """Adiciona a nova camada à fotografia correspondente."""
+        camadas = self._camadas_mascara.setdefault(caminho, [])
+        camadas.append(CamadaMascara(nome=nome, mascara=mascara, ajustes=ajustes))
+        if caminho == self._foto_atual:
+            self._atualizar_lista_camadas(indice_selecionado=len(camadas) - 1)
+            self._agendar_preview_imediato()
+
+    def _salvar_camada(
+        self,
+        caminho: Path,
+        indice: int,
+        mascara: Image.Image,
+        ajustes: AjustesMascara,
+    ) -> None:
+        """Atualiza somente a camada editada."""
+        camadas = self._camadas_mascara.get(caminho, [])
+        if not 0 <= indice < len(camadas):
             return
-        self._mascaras[self._foto_atual] = mascara
-        self._ajustes_mascara[self._foto_atual] = ajustes
-        self._atualizar_status_mascara()
+        camada = camadas[indice]
+        camadas[indice] = CamadaMascara(
+            nome=camada.nome,
+            mascara=mascara,
+            ajustes=ajustes,
+        )
+        if caminho == self._foto_atual:
+            self._atualizar_lista_camadas(indice_selecionado=indice)
+            self._agendar_preview_imediato()
+
+    def _renomear_camada_selecionada(self) -> None:
+        """Altera o nome da camada selecionada."""
+        caminho = self._foto_atual
+        indice = self._indice_camada_selecionada()
+        if caminho is None or indice is None:
+            messagebox.showinfo("Camadas locais", "Selecione uma camada para renomear.")
+            return
+        camada = self._camadas_mascara[caminho][indice]
+        nome = simpledialog.askstring(
+            "Renomear camada",
+            "Novo nome:",
+            initialvalue=camada.nome,
+            parent=self,
+        )
+        nome = nome.strip() if nome else ""
+        if not nome or nome == camada.nome:
+            return
+        if not self._nome_camada_disponivel(
+            caminho=caminho,
+            nome=nome,
+            indice_ignorado=indice,
+        ):
+            return
+        self._camadas_mascara[caminho][indice] = CamadaMascara(
+            nome=nome,
+            mascara=camada.mascara,
+            ajustes=camada.ajustes,
+        )
+        self._atualizar_lista_camadas(indice_selecionado=indice)
+
+    def _excluir_camada_selecionada(self) -> None:
+        """Exclui somente a camada selecionada após confirmação."""
+        caminho = self._foto_atual
+        indice = self._indice_camada_selecionada()
+        if caminho is None or indice is None:
+            messagebox.showinfo("Camadas locais", "Selecione uma camada para excluir.")
+            return
+        camada = self._camadas_mascara[caminho][indice]
+        confirmou = messagebox.askyesno(
+            "Excluir camada",
+            f"Excluir a camada “{camada.nome}”?",
+            parent=self,
+        )
+        if not confirmou:
+            return
+        camadas = self._camadas_mascara[caminho]
+        camadas.pop(indice)
+        if not camadas:
+            self._camadas_mascara.pop(caminho, None)
+        proximo_indice = min(indice, len(camadas) - 1) if camadas else None
+        self._atualizar_lista_camadas(indice_selecionado=proximo_indice)
         self._agendar_preview_imediato()
 
-    def _remover_mascara_atual(self) -> None:
-        """Desativa e remove a máscara da fotografia atual."""
-        if self._foto_atual is None:
-            return
-        self._mascaras.pop(self._foto_atual, None)
-        self._ajustes_mascara.pop(self._foto_atual, None)
-        self._atualizar_status_mascara()
-        self._agendar_preview_imediato()
+    def _nome_camada_disponivel(
+        self,
+        caminho: Path,
+        nome: str,
+        indice_ignorado: int | None = None,
+    ) -> bool:
+        """Valida nomes únicos dentro da fotografia."""
+        for indice, camada in enumerate(self._camadas_mascara.get(caminho, [])):
+            if indice != indice_ignorado and camada.nome.casefold() == nome.casefold():
+                messagebox.showwarning(
+                    "Nome já utilizado",
+                    "Escolha um nome diferente para identificar a camada.",
+                    parent=self,
+                )
+                return False
+        return True
 
-    def _atualizar_status_mascara(self) -> None:
-        """Mostra se a foto atual possui efeito local."""
-        if self._foto_atual is None or self._foto_atual not in self._mascaras:
-            self.var_status_mascara.set("Nenhuma máscara nesta foto")
+    def _indice_camada_selecionada(self) -> int | None:
+        """Retorna o índice da camada escolhida na lista."""
+        selecao = self.lista_camadas.curselection()
+        return int(selecao[0]) if selecao else None
+
+    def _camada_selecionada(self, _evento: tk.Event[tk.Misc]) -> None:
+        """Exibe um resumo do efeito da camada selecionada."""
+        self._atualizar_status_camadas()
+
+    def _atualizar_lista_camadas(self, indice_selecionado: int | None = None) -> None:
+        """Reconstrói a lista de camadas da fotografia atual."""
+        self.lista_camadas.delete(0, "end")
+        if self._foto_atual is None:
+            self._atualizar_status_camadas()
             return
-        ajustes = self._ajustes_mascara[self._foto_atual]
-        self.var_status_mascara.set(f"Ativa: {ajustes.efeito}")
+        camadas = self._camadas_mascara.get(self._foto_atual, [])
+        for camada in camadas:
+            self.lista_camadas.insert("end", camada.nome)
+        if camadas:
+            indice = 0 if indice_selecionado is None else indice_selecionado
+            indice = max(0, min(indice, len(camadas) - 1))
+            self.lista_camadas.selection_set(indice)
+            self.lista_camadas.activate(indice)
+            self.lista_camadas.see(indice)
+        self._atualizar_status_camadas()
+
+    def _atualizar_status_camadas(self) -> None:
+        """Mostra a quantidade e o efeito da camada selecionada."""
+        if self._foto_atual is None:
+            self.var_status_mascara.set("Nenhuma camada nesta foto")
+            return
+        camadas = self._camadas_mascara.get(self._foto_atual, [])
+        indice = self._indice_camada_selecionada()
+        if not camadas or indice is None:
+            self.var_status_mascara.set("Nenhuma camada nesta foto")
+            return
+        camada = camadas[indice]
+        self.var_status_mascara.set(
+            f"{len(camadas)} camada(s) · {camada.ajustes.efeito}",
+        )
 
     def _agendar_preview(self) -> None:
         """Evita recalcular enquanto o usuário ainda move um controle."""
+        self._mostrar_carregamento_preview()
         if self._temporizador_preview is not None:
             self.after_cancel(self._temporizador_preview)
         self._temporizador_preview = self.after(320, self._iniciar_preview)
 
     def _agendar_preview_imediato(self) -> None:
         """Solicita atualização imediata do preview."""
+        self._mostrar_carregamento_preview()
         if self._temporizador_preview is not None:
             self.after_cancel(self._temporizador_preview)
         self._temporizador_preview = None
         self._iniciar_preview()
+
+    def _mostrar_carregamento_preview(self) -> None:
+        """Sinaliza que a imagem exibida ainda não contém o último ajuste."""
+        if self._foto_atual is None:
+            return
+        self.sobreposicao_preview.place(relx=0.5, rely=0.5, anchor="center")
+        self.sobreposicao_preview.lift()
+        self.progresso_preview.start(interval=12)
+
+    def _ocultar_carregamento_preview(self) -> None:
+        """Remove o indicador após concluir o preview mais recente."""
+        self.progresso_preview.stop()
+        self.sobreposicao_preview.place_forget()
+
+    def _preview_redimensionado(self, evento: tk.Event[tk.Misc]) -> None:
+        """Refaz o preview quando a área visível muda de tamanho."""
+        area = (evento.width, evento.height)
+        diferenca = max(
+            abs(area[0] - self._ultima_area_preview[0]),
+            abs(area[1] - self._ultima_area_preview[1]),
+        )
+        self._ultima_area_preview = area
+        if self._foto_atual is None or diferenca < 60:
+            return
+        if self._temporizador_redimensionamento is not None:
+            self.after_cancel(self._temporizador_redimensionamento)
+        self._temporizador_redimensionamento = self.after(
+            280,
+            self._agendar_preview_imediato,
+        )
 
     def _iniciar_preview(self) -> None:
         """Processa o preview atual fora da interface."""
         self._temporizador_preview = None
         if self._foto_atual is None:
             return
+        if self._futuro_preview is not None and not self._futuro_preview.done():
+            self._futuro_preview.cancel()
         caminho = self._foto_atual
         foto = self._fotos[caminho]
         ajustes = self._ajustes[caminho]
-        mascara = self._mascaras.get(caminho)
-        mascara_trabalho = mascara.copy() if mascara is not None else None
-        ajustes_mascara = self._ajustes_mascara.get(caminho)
+        camadas_trabalho = [
+            CamadaMascara(
+                nome=camada.nome,
+                mascara=camada.mascara.copy(),
+                ajustes=camada.ajustes,
+            )
+            for camada in self._camadas_mascara.get(caminho, [])
+        ]
         self._geracao_preview += 1
         geracao = self._geracao_preview
         self.var_status.set(f"Gerando preview de {caminho.name}…")
@@ -817,8 +1196,7 @@ class AplicativoEditorRaw(tk.Tk):
                 imagem=base,
                 ajustes=ajustes,
                 iso=foto.iso,
-                mascara=mascara_trabalho,
-                ajustes_mascara=ajustes_mascara,
+                camadas=camadas_trabalho,
             )
             original_exibicao = base.copy()
             editada_exibicao = editada.copy()
@@ -827,6 +1205,7 @@ class AplicativoEditorRaw(tk.Tk):
             return base, original_exibicao, editada_exibicao
 
         futuro = self._executor.submit(trabalho)
+        self._futuro_preview = futuro
         futuro.add_done_callback(
             lambda tarefa: self._enfileirar_interface(
                 self._preview_concluido,
@@ -849,12 +1228,17 @@ class AplicativoEditorRaw(tk.Tk):
         geracao: int,
     ) -> None:
         """Mostra o preview se ele ainda corresponde à foto atual."""
+        if futuro.cancelled():
+            return
         try:
             base, original, editada = futuro.result()
-        except Exception as excecao:
+        except Exception:
             logger.exception("[PREVIEW] Falha ao processar %s", caminho.name)
-            if caminho == self._foto_atual:
-                self.var_status.set(f"Falha no preview: {excecao}")
+            if caminho == self._foto_atual and geracao == self._geracao_preview:
+                self._ocultar_carregamento_preview()
+                self.var_status.set(
+                    f"Não foi possível gerar o preview de {caminho.name}.",
+                )
             return
         self._guardar_cache(caminho=caminho, imagem=base)
         if caminho != self._foto_atual or geracao != self._geracao_preview:
@@ -863,6 +1247,7 @@ class AplicativoEditorRaw(tk.Tk):
         self._imagem_tk_editada = ImageTk.PhotoImage(editada)
         self.preview_original.configure(image=self._imagem_tk_original, text="")
         self.preview_editada.configure(image=self._imagem_tk_editada, text="")
+        self._ocultar_carregamento_preview()
         self.var_status.set("Preview atualizado. Nenhuma alteração foi salva no RAW.")
 
     def _guardar_cache(self, caminho: Path, imagem: Image.Image) -> None:
@@ -920,13 +1305,15 @@ class AplicativoEditorRaw(tk.Tk):
         for caminho in caminhos:
             self._fotos.pop(caminho, None)
             self._ajustes.pop(caminho, None)
-            self._mascaras.pop(caminho, None)
-            self._ajustes_mascara.pop(caminho, None)
+            self._camadas_mascara.pop(caminho, None)
             self._cache_preview.pop(caminho, None)
         if self._foto_atual in caminhos:
             self._foto_atual = None
+            self._geracao_preview += 1
+            self._ocultar_carregamento_preview()
             self.preview_original.configure(image="", text="Selecione uma foto")
             self.preview_editada.configure(image="", text="Os ajustes aparecerão aqui")
+            self._atualizar_lista_camadas()
         self._reconstruir_arvore()
         self.var_contagem.set(f"{len(self._fotos)} fotos")
         self.var_status.set(
@@ -970,42 +1357,66 @@ class AplicativoEditorRaw(tk.Tk):
 
     def _iniciar_exportacao(self, caminhos: list[Path]) -> None:
         """Inicia exportação sequencial em segundo plano."""
+        if self._exportacao_ativa:
+            messagebox.showinfo(
+                "Exportação em andamento",
+                "Aguarde a exportação atual ou solicite o cancelamento.",
+            )
+            return
         if not caminhos:
             messagebox.showinfo("Editor RAW", "Nenhuma foto foi selecionada.")
             return
         pasta = self._obter_pasta_sessao()
         if pasta is None:
             return
-        formato = self.var_formato.get()
+        formato = cast(FormatoExportacao, self.var_formato.get())
+        itens = [
+            ItemExportacao(
+                origem=caminho,
+                ajustes=self._ajustes[caminho],
+                iso=self._fotos[caminho].iso,
+                camadas=tuple(self._camadas_mascara.get(caminho, [])),
+            )
+            for caminho in caminhos
+        ]
         self._cancelar_exportacao.clear()
-        self.barra_progresso.configure(maximum=len(caminhos), value=0)
-        self.var_status.set(f"Exportando 0 de {len(caminhos)}…")
+        self.barra_progresso.configure(maximum=len(itens), value=0)
+        self.barra_progresso_modal.configure(maximum=len(itens), value=0)
+        self.var_progresso_exportacao.set(f"0 de {len(itens)} concluída(s)")
+        self.var_arquivo_exportacao.set("Preparando a primeira fotografia…")
+        self.var_status.set(f"Exportando 0 de {len(itens)}…")
+        self._definir_exportacao_ativa(ativa=True)
 
         def trabalho() -> tuple[list[Path], list[tuple[Path, str]], bool]:
             concluidas: list[Path] = []
             falhas: list[tuple[Path, str]] = []
-            for indice, caminho in enumerate(caminhos, start=1):
+            for indice, item in enumerate(itens, start=1):
                 if self._cancelar_exportacao.is_set():
                     return concluidas, falhas, True
+                self._enfileirar_interface(
+                    self._mostrar_foto_em_exportacao,
+                    indice,
+                    len(itens),
+                    item.origem.name,
+                )
                 try:
                     destino = exportar_foto(
-                        origem=caminho,
+                        origem=item.origem,
                         pasta_destino=pasta,
-                        ajustes=self._ajustes[caminho],
-                        iso=self._fotos[caminho].iso,
+                        ajustes=item.ajustes,
+                        iso=item.iso,
                         formato=formato,
-                        mascara=self._mascaras.get(caminho),
-                        ajustes_mascara=self._ajustes_mascara.get(caminho),
+                        camadas=list(item.camadas),
                     )
                     concluidas.append(destino)
                 except Exception as excecao:
-                    logger.exception("[EXPORTACAO] Falha em %s", caminho.name)
-                    falhas.append((caminho, str(excecao)))
+                    logger.exception("[EXPORTACAO] Falha em %s", item.origem.name)
+                    falhas.append((item.origem, str(excecao)))
                 self._enfileirar_interface(
                     self._atualizar_progresso,
                     indice,
-                    len(caminhos),
-                    caminho.name,
+                    len(itens),
+                    item.origem.name,
                 )
             return concluidas, falhas, False
 
@@ -1021,7 +1432,21 @@ class AplicativoEditorRaw(tk.Tk):
     def _atualizar_progresso(self, atual: int, total: int, nome: str) -> None:
         """Atualiza a barra durante a exportação."""
         self.barra_progresso.configure(value=atual)
+        self.barra_progresso_modal.configure(value=atual)
+        self.var_progresso_exportacao.set(f"{atual} de {total} concluída(s)")
+        self.var_arquivo_exportacao.set(f"Última processada: {nome}")
         self.var_status.set(f"Exportando {atual} de {total}: {nome}")
+
+    def _mostrar_foto_em_exportacao(
+        self,
+        atual: int,
+        total: int,
+        nome: str,
+    ) -> None:
+        """Mostra qual fotografia está sendo processada no momento."""
+        self.var_arquivo_exportacao.set(
+            f"Processando {atual} de {total}: {nome}",
+        )
 
     def _exportacao_concluida(
         self,
@@ -1029,11 +1454,15 @@ class AplicativoEditorRaw(tk.Tk):
         pasta: Path,
     ) -> None:
         """Informa o resultado da exportação."""
+        self._definir_exportacao_ativa(ativa=False)
         try:
             concluidas, falhas, cancelada = futuro.result()
-        except Exception as excecao:
+        except Exception:
             logger.exception("[EXPORTACAO] Falha geral")
-            messagebox.showerror("Falha na exportação", str(excecao))
+            messagebox.showerror(
+                "Falha na exportação",
+                "Não foi possível concluir a exportação. Tente novamente após reiniciar o aplicativo.",
+            )
             return
         if cancelada:
             self.var_status.set(
@@ -1048,15 +1477,53 @@ class AplicativoEditorRaw(tk.Tk):
             mensagem += f"\n\n{len(falhas)} arquivo(s) apresentaram erro."
         messagebox.showinfo("Exportação concluída", mensagem)
 
+    def _definir_exportacao_ativa(self, ativa: bool) -> None:
+        """Bloqueia a interface e mantém apenas o cancelamento disponível."""
+        self._exportacao_ativa = ativa
+        estado_exportar = "disabled" if ativa else "normal"
+        estado_cancelar = "normal" if ativa else "disabled"
+        self.botao_exportar_selecionadas.configure(state=estado_exportar)
+        self.botao_exportar_todas.configure(state=estado_exportar)
+        self.botao_cancelar_exportacao.configure(state=estado_cancelar)
+        if ativa:
+            self.botao_cancelar_modal.configure(state="normal")
+            self.bloqueio_exportacao.place(
+                x=0,
+                y=0,
+                relwidth=1,
+                relheight=1,
+            )
+            self.bloqueio_exportacao.lift()
+            self.bloqueio_exportacao.grab_set()
+            self.botao_cancelar_modal.focus_set()
+            return
+        if self.grab_current() == self.bloqueio_exportacao:
+            self.bloqueio_exportacao.grab_release()
+        self.bloqueio_exportacao.place_forget()
+
     def _solicitar_cancelamento(self) -> None:
         """Solicita o encerramento seguro da exportação atual."""
+        if not self._exportacao_ativa:
+            return
         self._cancelar_exportacao.set()
+        self.botao_cancelar_modal.configure(state="disabled")
+        self.var_progresso_exportacao.set("Cancelamento solicitado")
+        self.var_arquivo_exportacao.set(
+            "A fotografia atual será concluída antes de interromper o lote.",
+        )
         self.var_status.set("Cancelamento solicitado; terminando a foto atual…")
 
     def _fechar(self) -> None:
         """Encerra tarefas e fecha o aplicativo."""
+        if self._exportacao_ativa:
+            self.var_arquivo_exportacao.set(
+                "Use “Cancelar exportação” antes de fechar o aplicativo.",
+            )
+            return
         self._encerrando = True
         self._cancelar_exportacao.set()
+        if self._futuro_preview is not None:
+            self._futuro_preview.cancel()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 

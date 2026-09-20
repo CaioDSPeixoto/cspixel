@@ -25,7 +25,7 @@ if (-not (Test-Path -LiteralPath $executavelPython)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Não foi possível atualizar o pip."
 }
-& $executavelPython -m pip install -r (Join-Path $pastaProjeto "requirements.txt")
+& $executavelPython -m pip install -r (Join-Path $pastaProjeto "requirements-dev.txt")
 if ($LASTEXITCODE -ne 0) {
     throw "Não foi possível instalar as dependências."
 }
@@ -45,6 +45,32 @@ if ($versaoPython -ne "3.12") {
     (Join-Path $pastaProjeto "versao.py")
 if ($LASTEXITCODE -ne 0) {
     throw "A validação de sintaxe falhou."
+}
+
+& $executavelPython -m ruff check `
+    (Join-Path $pastaProjeto "app.py") `
+    (Join-Path $pastaProjeto "editor_mascara.py") `
+    (Join-Path $pastaProjeto "efeitos.py") `
+    (Join-Path $pastaProjeto "modelos.py") `
+    (Join-Path $pastaProjeto "presets.py") `
+    (Join-Path $pastaProjeto "processamento.py") `
+    (Join-Path $pastaProjeto "versao.py") `
+    (Join-Path $pastaProjeto "tests")
+if ($LASTEXITCODE -ne 0) {
+    throw "A análise de qualidade do código falhou."
+}
+
+& $executavelPython -m mypy `
+    --ignore-missing-imports `
+    (Join-Path $pastaProjeto "app.py") `
+    (Join-Path $pastaProjeto "editor_mascara.py") `
+    (Join-Path $pastaProjeto "efeitos.py") `
+    (Join-Path $pastaProjeto "modelos.py") `
+    (Join-Path $pastaProjeto "presets.py") `
+    (Join-Path $pastaProjeto "processamento.py") `
+    (Join-Path $pastaProjeto "versao.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "A verificação de tipos falhou."
 }
 
 & $executavelPython -m unittest discover `

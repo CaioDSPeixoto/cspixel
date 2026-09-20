@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal, TypeAlias
 
 import numpy as np
-from PIL import ExifTags, Image, ImageEnhance, ImageFilter
+from PIL import ExifTags, Image, ImageCms, ImageEnhance, ImageFilter
 import rawpy
 
 from efeitos import (
@@ -17,10 +17,11 @@ from efeitos import (
     EFEITO_PB_SELECAO,
     EFEITO_SATURAR_SELECAO,
 )
-from modelos import AjustesFoto, AjustesMascara
+from modelos import AjustesFoto, AjustesMascara, CamadaMascara
 
 __all__ = [
     "EXTENSOES_SUPORTADAS",
+    "FormatoExportacao",
     "QUALIDADE_JPEG",
     "aplicar_ajustes",
     "aplicar_edicao_completa",
@@ -34,6 +35,7 @@ __all__ = [
 ]
 
 
+FormatoExportacao: TypeAlias = Literal["JPEG", "PNG"]
 EXTENSOES_SUPORTADAS: Final[tuple[str, ...]] = (
     ".cr2",
     ".cr3",
@@ -44,7 +46,10 @@ EXTENSOES_SUPORTADAS: Final[tuple[str, ...]] = (
     ".rw2",
     ".raf",
 )
-QUALIDADE_JPEG: Final = 98
+QUALIDADE_JPEG: Final = 100
+PERFIL_SRGB: Final[bytes] = ImageCms.ImageCmsProfile(
+    ImageCms.createProfile("sRGB"),
+).tobytes()
 TAG_EXIF: Final[dict[str, int]] = {
     nome: codigo for codigo, nome in ExifTags.TAGS.items()
 }
@@ -139,14 +144,11 @@ def _reduzir_pixels_quentes(imagem: Image.Image) -> Image.Image:
         dtype=np.float32,
     )
     luminancia = (
-        0.2126 * matriz[:, :, 0]
-        + 0.7152 * matriz[:, :, 1]
-        + 0.0722 * matriz[:, :, 2]
+        0.2126 * matriz[:, :, 0] + 0.7152 * matriz[:, :, 1] + 0.0722 * matriz[:, :, 2]
     )
     diferenca = np.max(np.abs(matriz - mediana), axis=2)
-    cor_isolada = (
-        (matriz[:, :, 0] > mediana[:, :, 0] + 24)
-        | (matriz[:, :, 2] > mediana[:, :, 2] + 24)
+    cor_isolada = (matriz[:, :, 0] > mediana[:, :, 0] + 24) | (
+        matriz[:, :, 2] > mediana[:, :, 2] + 24
     )
     mascara = (luminancia < 125) & (diferenca > 27) & cor_isolada
     matriz[mascara] = mediana[mascara]
@@ -209,6 +211,18 @@ def aplicar_ajustes(
     iso: int,
 ) -> Image.Image:
     """Aplica os ajustes informados sem modificar a imagem de origem."""
+    sem_alteracoes = (
+        ajustes.exposicao == 0
+        and ajustes.contraste == 0
+        and ajustes.realces == 0
+        and ajustes.sombras == 0
+        and ajustes.saturacao == 0
+        and ajustes.temperatura == 0
+        and ajustes.reducao_ruido == 0
+        and ajustes.nitidez == 0
+    )
+    if sem_alteracoes:
+        return imagem.convert("RGB").copy()
     matriz = np.asarray(imagem, dtype=np.float32)
     matriz = _aplicar_exposicao(matriz=matriz, valor=ajustes.exposicao)
     matriz = _aplicar_temperatura(matriz=matriz, valor=ajustes.temperatura)
@@ -222,7 +236,8 @@ def aplicar_ajustes(
         np.clip(matriz, 0, 255).astype(np.uint8),
         mode="RGB",
     )
-    resultado = _reduzir_pixels_quentes(imagem=resultado)
+    if ajustes.reducao_ruido > 0:
+        resultado = _reduzir_pixels_quentes(imagem=resultado)
     resultado = _reduzir_ruido(
         imagem=resultado,
         iso=iso,
@@ -294,32 +309,41 @@ def aplicar_edicao_completa(
     iso: int,
     mascara: Image.Image | None = None,
     ajustes_mascara: AjustesMascara | None = None,
+    camadas: list[CamadaMascara] | None = None,
 ) -> Image.Image:
-    """Aplica ajustes globais e, quando configurado, um efeito local."""
+    """Aplica ajustes globais e as camadas locais em sequência."""
     ajustes_base = ajustes
     efeitos_com_cor = {
         EFEITO_DESTAQUE_SELETIVO,
         EFEITO_DESTAQUE_SUAVE,
         EFEITO_SATURAR_SELECAO,
     }
-    if (
-        ajustes_mascara is not None
-        and ajustes_mascara.efeito in efeitos_com_cor
-        and ajustes.saturacao < 0
-    ):
+    ajustes_locais = [camada.ajustes for camada in camadas or []]
+    if ajustes_mascara is not None:
+        ajustes_locais.append(ajustes_mascara)
+    preserva_cor = any(
+        ajuste_local.efeito in efeitos_com_cor for ajuste_local in ajustes_locais
+    )
+    if preserva_cor and ajustes.saturacao < 0:
         ajustes_base = ajustes.copiar(saturacao=0)
     resultado = aplicar_ajustes(
         imagem=imagem,
         ajustes=ajustes_base,
         iso=iso,
     )
-    if ajustes_mascara is None:
-        return resultado
-    return aplicar_mascara_local(
-        imagem=resultado,
-        mascara=mascara,
-        ajustes=ajustes_mascara,
-    )
+    if ajustes_mascara is not None:
+        resultado = aplicar_mascara_local(
+            imagem=resultado,
+            mascara=mascara,
+            ajustes=ajustes_mascara,
+        )
+    for camada in camadas or []:
+        resultado = aplicar_mascara_local(
+            imagem=resultado,
+            mascara=camada.mascara,
+            ajustes=camada.ajustes,
+        )
+    return resultado
 
 
 def criar_preview(
@@ -354,11 +378,14 @@ def exportar_foto(
     pasta_destino: Path,
     ajustes: AjustesFoto,
     iso: int,
-    formato: str,
+    formato: FormatoExportacao,
     mascara: Image.Image | None = None,
     ajustes_mascara: AjustesMascara | None = None,
+    camadas: list[CamadaMascara] | None = None,
 ) -> Path:
     """Revela e exporta uma foto em resolução total para uma nova pasta."""
+    if formato not in {"JPEG", "PNG"}:
+        raise ValueError("Formato de exportação não suportado.")
     pasta_destino.mkdir(parents=True, exist_ok=True)
     imagem = revelar_raw(caminho=origem, iso=iso, preview=False)
     imagem = aplicar_edicao_completa(
@@ -367,6 +394,7 @@ def exportar_foto(
         iso=iso,
         mascara=mascara,
         ajustes_mascara=ajustes_mascara,
+        camadas=camadas,
     )
     extensao = ".png" if formato == "PNG" else ".jpg"
     destino = nome_destino_seguro(
@@ -375,13 +403,21 @@ def exportar_foto(
         extensao=extensao,
     )
     if formato == "PNG":
-        imagem.save(destino, format="PNG", compress_level=4, dpi=(300, 300))
+        imagem.save(
+            destino,
+            format="PNG",
+            compress_level=4,
+            dpi=(300, 300),
+            icc_profile=PERFIL_SRGB,
+        )
     else:
         imagem.save(
             destino,
             format="JPEG",
             quality=QUALIDADE_JPEG,
             subsampling=0,
+            optimize=True,
             dpi=(300, 300),
+            icc_profile=PERFIL_SRGB,
         )
     return destino

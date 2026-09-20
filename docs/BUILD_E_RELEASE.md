@@ -7,7 +7,7 @@
 - PowerShell.
 - Acesso à internet apenas na primeira instalação das dependências.
 
-As versões das bibliotecas estão fixadas em `requirements.txt` para tornar o resultado reproduzível.
+As versões de execução estão fixadas em `requirements.txt`; as ferramentas de qualidade e build ficam em `requirements-dev.txt`.
 
 ## Build padrão
 
@@ -27,13 +27,15 @@ Quando `python` não apontar para o Python 3.12:
 
 1. Confirma que o executável anterior não está aberto.
 2. Cria `.venv`, se necessário.
-3. Instala as versões fixadas em `requirements.txt`.
+3. Instala as versões fixadas em `requirements-dev.txt`.
 4. Confirma o uso do Python 3.12.
 5. Compila os módulos para validar a sintaxe.
-6. Executa todos os testes unitários.
-7. Gera um executável único e sem console com PyInstaller.
-8. Calcula o SHA-256 do artefato.
-9. Copia o README e grava `dist/build-info.txt`.
+6. Executa Ruff para validar estilo e erros estáticos.
+7. Executa mypy para validar os tipos.
+8. Executa todos os testes unitários.
+9. Gera um executável único e sem console com PyInstaller.
+10. Calcula o SHA-256 do artefato.
+11. Copia o README e grava `dist/build-info.txt`.
 
 Qualquer falha interrompe o processo; o script não deve anunciar sucesso após erro.
 
@@ -56,7 +58,7 @@ O diretório `build/`, o arquivo `EditorRAW.spec` e `.venv/` são materiais loca
 4. Altere um preset e um controle manual.
 5. Confirme a comparação original × preview.
 6. Exporte uma imagem JPEG.
-7. Confira resolução, cor e abertura do arquivo exportado; JPEG deve usar qualidade 98 e cores 4:4:4.
+7. Confira resolução, cor e abertura do arquivo exportado; JPEG deve usar qualidade 100 e cores 4:4:4.
 8. Confirme que tamanho e data de modificação do RAW não mudaram.
 9. Feche o programa e confira se não ficou um processo `EditorRAW.exe` aberto.
 
