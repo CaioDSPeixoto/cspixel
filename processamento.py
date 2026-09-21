@@ -82,25 +82,53 @@ def faixa_iso(iso: int) -> str:
     return "ISO muito alto (acima de 3200)"
 
 
-def revelar_raw(caminho: Path, iso: int, preview: bool) -> Image.Image:
-    """Revela um RAW em sRGB, usando meia resolução no preview."""
-    reducao = (
-        rawpy.FBDDNoiseReductionMode.Full
-        if iso >= 1600
-        else rawpy.FBDDNoiseReductionMode.Light
+def _cena_subexposta(
+    mosaico: np.ndarray,
+    nivel_preto: float,
+    nivel_branco: float,
+) -> bool:
+    """Classifica a luz geral sem deixar poucos realces dominarem a decisão."""
+    intervalo = max(1.0, nivel_branco - nivel_preto)
+    percentil_90 = float(np.percentile(mosaico, 90))
+    nivel_normalizado = (percentil_90 - nivel_preto) / intervalo
+    return nivel_normalizado < 0.18
+
+
+def _precisa_brilho_automatico(raw: rawpy.RawPy) -> bool:
+    """Detecta cenas subexpostas diretamente nos dados do RAW."""
+    return _cena_subexposta(
+        mosaico=raw.raw_image_visible,
+        nivel_preto=float(np.mean(raw.black_level_per_channel)),
+        nivel_branco=float(raw.white_level),
     )
-    passagens_mediana = 2 if iso >= 3200 else 1
+
+
+def revelar_raw(caminho: Path, iso: int, preview: bool) -> Image.Image:
+    """Revela um RAW em sRGB com caminho rápido para o preview."""
+    reducao = rawpy.FBDDNoiseReductionMode.Off
+    passagens_mediana = 0
+    algoritmo = rawpy.DemosaicAlgorithm.LINEAR
+    if not preview:
+        reducao = (
+            rawpy.FBDDNoiseReductionMode.Full
+            if iso >= 1600
+            else rawpy.FBDDNoiseReductionMode.Light
+        )
+        passagens_mediana = 2 if iso >= 3200 else 1
+        algoritmo = rawpy.DemosaicAlgorithm.AHD
     with rawpy.imread(str(caminho)) as raw:
+        brilho_automatico = _precisa_brilho_automatico(raw=raw)
         dados = raw.postprocess(
             use_camera_wb=True,
             output_color=rawpy.ColorSpace.sRGB,
             output_bps=8,
-            bright=0.98,
-            no_auto_bright=False,
+            bright=1.0 if brilho_automatico else 1.2,
+            no_auto_bright=not brilho_automatico,
             highlight_mode=rawpy.HighlightMode.Blend,
             fbdd_noise_reduction=reducao,
             median_filter_passes=passagens_mediana,
             half_size=preview,
+            demosaic_algorithm=algoritmo,
         )
     return Image.fromarray(dados, mode="RGB")
 
@@ -146,11 +174,13 @@ def _reduzir_pixels_quentes(imagem: Image.Image) -> Image.Image:
     luminancia = (
         0.2126 * matriz[:, :, 0] + 0.7152 * matriz[:, :, 1] + 0.0722 * matriz[:, :, 2]
     )
-    diferenca = np.max(np.abs(matriz - mediana), axis=2)
-    cor_isolada = (matriz[:, :, 0] > mediana[:, :, 0] + 24) | (
-        matriz[:, :, 2] > mediana[:, :, 2] + 24
+    desvio = matriz - mediana
+    diferenca = np.max(np.abs(desvio), axis=2)
+    diferenca_cromatica = np.maximum(
+        np.abs(desvio[:, :, 0] - desvio[:, :, 1]),
+        np.abs(desvio[:, :, 2] - desvio[:, :, 1]),
     )
-    mascara = (luminancia < 125) & (diferenca > 27) & cor_isolada
+    mascara = (luminancia < 140) & (diferenca > 24) & (diferenca_cromatica > 21)
     matriz[mascara] = mediana[mascara]
     return Image.fromarray(np.clip(matriz, 0, 255).astype(np.uint8), mode="RGB")
 
@@ -164,36 +194,53 @@ def _reduzir_ruido(
     if intensidade <= 0:
         return imagem
     escala = intensidade / 100.0
-    raio_cor = 0.7 + 3.4 * escala + min(iso / 6400.0, 1.0) * 0.6
+    escala_iso = min(max((iso - 400) / 6000.0, 0.0), 1.0)
+    raio_cor = 0.6 + 4.6 * escala + 0.9 * escala_iso
+    peso_cor = min(1.0, escala * (0.72 + 0.28 * escala_iso))
     luminancia, azul, vermelho = imagem.convert("YCbCr").split()
-    azul = azul.filter(ImageFilter.GaussianBlur(radius=raio_cor))
-    vermelho = vermelho.filter(ImageFilter.GaussianBlur(radius=raio_cor))
+    for nome_canal, canal in (("azul", azul), ("vermelho", vermelho)):
+        alvo_cor = canal.filter(ImageFilter.GaussianBlur(radius=raio_cor))
+        canal_tratado = Image.blend(canal, alvo_cor, alpha=peso_cor)
+        if nome_canal == "azul":
+            azul = canal_tratado
+        else:
+            vermelho = canal_tratado
 
     matriz_luminancia = np.asarray(luminancia, dtype=np.float32)
-    mediana = np.asarray(
-        luminancia.filter(ImageFilter.MedianFilter(size=3)),
-        dtype=np.float32,
-    )
-    raio_luminancia = 0.45 + 0.7 * escala
+    imagem_mediana_fina = luminancia.filter(ImageFilter.MedianFilter(size=3))
+    mediana_fina = np.asarray(imagem_mediana_fina, dtype=np.float32)
+    peso_mediana_forte = np.clip((intensidade - 55) / 45.0, 0.0, 1.0)
+    if peso_mediana_forte > 0:
+        mediana_forte = np.asarray(
+            imagem_mediana_fina.filter(ImageFilter.MedianFilter(size=3)),
+            dtype=np.float32,
+        )
+        mediana = (
+            mediana_fina * (1.0 - peso_mediana_forte)
+            + mediana_forte * peso_mediana_forte
+        )
+    else:
+        mediana = mediana_fina
+    raio_luminancia = 0.35 + 1.25 * escala
     suave = np.asarray(
         luminancia.filter(ImageFilter.GaussianBlur(radius=raio_luminancia)),
         dtype=np.float32,
     )
-    alvo = mediana * 0.70 + suave * 0.30
-    peso_sombra = np.clip((180 - matriz_luminancia) / 130, 0.20, 1.0)
+    alvo = mediana * 0.78 + suave * 0.22
+    peso_sombra = np.clip((190 - matriz_luminancia) / 150, 0.18, 1.0)
     estrutura = np.asarray(
-        luminancia.filter(ImageFilter.GaussianBlur(radius=1.6)),
+        luminancia.filter(ImageFilter.GaussianBlur(radius=1.8)),
         dtype=np.float32,
     )
     gradiente_x = np.abs(np.diff(estrutura, axis=1, prepend=estrutura[:, :1]))
     gradiente_y = np.abs(np.diff(estrutura, axis=0, prepend=estrutura[:1, :]))
     preservacao = np.clip(
-        1.0 - np.maximum(gradiente_x, gradiente_y) / 34.0,
-        0.28,
+        1.0 - np.maximum(gradiente_x, gradiente_y) / 30.0,
+        0.18,
         1.0,
     )
-    peso_iso = 0.72 + min(iso / 6400.0, 1.0) * 0.28
-    peso = escala * peso_iso * (0.46 + 0.54 * peso_sombra) * preservacao
+    peso_iso = 0.78 + escala_iso * 0.22
+    peso = escala**0.85 * peso_iso * (0.52 + 0.48 * peso_sombra) * preservacao
     tratada = matriz_luminancia * (1.0 - peso) + alvo * peso
     canal_luminancia = Image.fromarray(
         np.clip(tratada, 0, 255).astype(np.uint8),
@@ -213,6 +260,7 @@ def aplicar_ajustes(
     """Aplica os ajustes informados sem modificar a imagem de origem."""
     sem_alteracoes = (
         ajustes.exposicao == 0
+        and ajustes.brilho == 0
         and ajustes.contraste == 0
         and ajustes.realces == 0
         and ajustes.sombras == 0
@@ -243,14 +291,19 @@ def aplicar_ajustes(
         iso=iso,
         intensidade=ajustes.reducao_ruido,
     )
+    fator_brilho = max(0.0, 1.0 + ajustes.brilho / 100.0)
+    resultado = ImageEnhance.Brightness(resultado).enhance(fator_brilho)
     fator_cor = max(0.0, 1.0 + ajustes.saturacao / 100.0)
     resultado = ImageEnhance.Color(resultado).enhance(fator_cor)
     if ajustes.nitidez > 0:
+        escala_ruido = ajustes.reducao_ruido / 100.0
+        percentual = int(ajustes.nitidez * 1.35 * (1.0 - 0.30 * escala_ruido))
+        limiar = (7 if iso < 3200 else 11) + int(6 * escala_ruido)
         resultado = resultado.filter(
             ImageFilter.UnsharpMask(
                 radius=1.0,
-                percent=int(ajustes.nitidez * 1.35),
-                threshold=7 if iso < 3200 else 11,
+                percent=percentual,
+                threshold=limiar,
             )
         )
     return resultado
@@ -354,9 +407,12 @@ def criar_preview(
 ) -> tuple[Image.Image, Image.Image]:
     """Gera os previews original e editado para comparação."""
     original = revelar_raw(caminho=caminho, iso=iso, preview=True)
-    editada = aplicar_edicao_completa(imagem=original, ajustes=ajustes, iso=iso)
     original.thumbnail(tamanho_maximo, Image.Resampling.LANCZOS)
-    editada.thumbnail(tamanho_maximo, Image.Resampling.LANCZOS)
+    editada = aplicar_edicao_completa(
+        imagem=original,
+        ajustes=ajustes,
+        iso=iso,
+    )
     return original, editada
 
 

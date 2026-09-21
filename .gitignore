@@ -11,6 +11,7 @@ htmlcov/
 # Artefatos gerados pelo PyInstaller
 build/
 dist/
+dist-*/
 *.spec
 
 # Arquivos locais do sistema e do editor

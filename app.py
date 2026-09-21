@@ -62,6 +62,7 @@ class AplicativoEditorRaw(tk.Tk):
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._fotos: dict[Path, FotoProjeto] = {}
         self._ajustes: dict[Path, AjustesFoto] = {}
+        self._fotos_editadas: set[Path] = set()
         self._camadas_mascara: dict[Path, list[CamadaMascara]] = {}
         self._item_para_caminho: dict[str, Path] = {}
         self._foto_atual: Path | None = None
@@ -112,8 +113,10 @@ class AplicativoEditorRaw(tk.Tk):
 
     def _criar_variaveis(self) -> None:
         """Inicializa as variáveis vinculadas aos controles."""
-        self.var_preset = tk.StringVar(value="Natural")
+        self.var_preset = tk.StringVar(value="Sem ajustes")
+        self.var_preset_sugerido = tk.StringVar(value="")
         self.var_exposicao = tk.DoubleVar(value=0.0)
+        self.var_brilho = tk.IntVar(value=0)
         self.var_contraste = tk.IntVar(value=6)
         self.var_realces = tk.IntVar(value=-12)
         self.var_sombras = tk.IntVar(value=10)
@@ -129,7 +132,9 @@ class AplicativoEditorRaw(tk.Tk):
             value="Selecione arquivos RAW para começar.",
         )
         self.var_saida = tk.StringVar(value="Pasta de saída ainda não escolhida")
-        self.var_contagem = tk.StringVar(value="0 fotos")
+        self.var_contagem = tk.StringVar(value="0 fotos · 0 editadas")
+        self.var_busca_fotos = tk.StringVar(value="")
+        self.var_resultado_busca = tk.StringVar(value="")
         self.var_status_mascara = tk.StringVar(value="Nenhuma camada nesta foto")
         self.var_progresso_exportacao = tk.StringVar(value="Preparando exportação…")
         self.var_arquivo_exportacao = tk.StringVar(value="")
@@ -334,19 +339,51 @@ class AplicativoEditorRaw(tk.Tk):
             painel,
             text="FOTOS POR ISO",
             style="Titulo.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(anchor="w", pady=(0, 5))
+        ttk.Label(
+            painel,
+            text="Buscar por nome ou número",
+            style="Secundario.TLabel",
+        ).pack(anchor="w", pady=(0, 4))
+        linha_busca = ttk.Frame(painel, style="Painel.TFrame")
+        linha_busca.pack(fill="x", pady=(0, 3))
+        self.entrada_busca_fotos = ttk.Entry(
+            linha_busca,
+            textvariable=self.var_busca_fotos,
+        )
+        self.entrada_busca_fotos.pack(side="left", fill="x", expand=True)
+        self.entrada_busca_fotos.bind("<Escape>", self._limpar_busca)
+        ttk.Button(
+            linha_busca,
+            text="Limpar",
+            width=7,
+            command=self._limpar_busca,
+        ).pack(side="right", padx=(5, 0))
+        ttk.Label(
+            painel,
+            textvariable=self.var_resultado_busca,
+            style="Secundario.TLabel",
+        ).pack(anchor="w", pady=(0, 7))
+        self.var_busca_fotos.trace_add("write", self._busca_alterada)
+        self.bind(
+            "<Control-f>",
+            lambda _evento: self.entrada_busca_fotos.focus_set(),
+            add="+",
+        )
         quadro = ttk.Frame(painel, style="Painel.TFrame")
         quadro.pack(fill="both", expand=True)
         self.arvore = ttk.Treeview(
             quadro,
-            columns=("iso",),
-            displaycolumns=("iso",),
+            columns=("iso", "status"),
+            displaycolumns=("iso", "status"),
             selectmode="extended",
         )
         self.arvore.heading("#0", text="Arquivo")
         self.arvore.heading("iso", text="ISO")
-        self.arvore.column("#0", width=190, minwidth=130)
-        self.arvore.column("iso", width=65, anchor="center")
+        self.arvore.heading("status", text="Status")
+        self.arvore.column("#0", width=165, minwidth=120)
+        self.arvore.column("iso", width=55, anchor="center")
+        self.arvore.column("status", width=78, anchor="center")
         rolagem = ttk.Scrollbar(
             quadro,
             orient="vertical",
@@ -492,6 +529,38 @@ class AplicativoEditorRaw(tk.Tk):
         )
         seletor.pack(fill="x", pady=(7, 12))
         seletor.bind("<<ComboboxSelected>>", self._preset_alterado)
+        ttk.Label(
+            painel,
+            text="Acesso rápido",
+            style="Secundario.TLabel",
+        ).pack(anchor="w", pady=(0, 5))
+        favoritos = ttk.Frame(painel, style="Painel.TFrame")
+        favoritos.pack(fill="x", pady=(0, 5))
+        ttk.Button(
+            favoritos,
+            text="Cores vivas",
+            command=lambda: self._aplicar_preset(nome="Cores vivas"),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(
+            favoritos,
+            text="Menos ruído",
+            command=lambda: self._aplicar_preset(nome="Menos ruído"),
+        ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        favoritos.columnconfigure(0, weight=1)
+        favoritos.columnconfigure(1, weight=1)
+        ttk.Button(
+            painel,
+            text="Cores vivas + menos ruído",
+            command=lambda: self._aplicar_preset(
+                nome="Cores vivas + menos ruído",
+            ),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            painel,
+            textvariable=self.var_preset_sugerido,
+            style="Secundario.TLabel",
+            wraplength=270,
+        ).pack(fill="x", pady=(0, 10))
 
     def _criar_secao_ajustes_manuais(self, painel: ttk.Frame) -> None:
         """Cria os controles globais e ações de cópia de ajustes."""
@@ -509,6 +578,7 @@ class AplicativoEditorRaw(tk.Tk):
             resolucao=0.05,
         )
         for titulo, variavel, minimo, maximo in (
+            ("Brilho", self.var_brilho, -100, 100),
             ("Contraste", self.var_contraste, -50, 50),
             ("Realces", self.var_realces, -100, 100),
             ("Sombras", self.var_sombras, -100, 100),
@@ -528,9 +598,14 @@ class AplicativoEditorRaw(tk.Tk):
 
         ttk.Button(
             painel,
-            text="Restaurar preset desta foto",
-            command=self._restaurar_preset,
+            text="Aplicar preset sugerido",
+            command=self._aplicar_preset_sugerido,
         ).pack(fill="x", pady=(8, 4))
+        ttk.Button(
+            painel,
+            text="Descartar edição desta foto",
+            command=self._descartar_edicao_atual,
+        ).pack(fill="x", pady=4)
         ttk.Button(
             painel,
             text="Copiar para fotos selecionadas",
@@ -640,17 +715,17 @@ class AplicativoEditorRaw(tk.Tk):
         ).pack(fill="x", pady=(6, 2))
         self.botao_exportar_selecionadas = ttk.Button(
             painel,
-            text="Exportar selecionadas",
+            text="Exportar selecionadas na lista",
             command=self._exportar_selecionadas,
         )
         self.botao_exportar_selecionadas.pack(fill="x", pady=(10, 4))
-        self.botao_exportar_todas = ttk.Button(
+        self.botao_exportar_editadas = ttk.Button(
             painel,
-            text="Exportar todas",
+            text="Exportar somente editadas",
             style="Destaque.TButton",
-            command=self._exportar_todas,
+            command=self._exportar_editadas,
         )
-        self.botao_exportar_todas.pack(fill="x", pady=4)
+        self.botao_exportar_editadas.pack(fill="x", pady=4)
         self.botao_cancelar_exportacao = ttk.Button(
             painel,
             text="Cancelar exportação",
@@ -775,10 +850,9 @@ class AplicativoEditorRaw(tk.Tk):
             return
         for foto in fotos:
             self._fotos[foto.caminho] = foto
-            nome_preset = preset_recomendado(iso=foto.iso)
-            self._ajustes[foto.caminho] = AJUSTES_PADRAO[nome_preset]
+            self._ajustes[foto.caminho] = AJUSTES_PADRAO["Sem ajustes"]
         self._reconstruir_arvore()
-        self.var_contagem.set(f"{len(self._fotos)} fotos")
+        self._atualizar_contagem()
         self.var_status.set(
             f"{len(fotos)} foto(s) adicionada(s). Selecione uma para editar.",
         )
@@ -787,9 +861,11 @@ class AplicativoEditorRaw(tk.Tk):
 
     def _reconstruir_arvore(self) -> None:
         """Recria a árvore mantendo o agrupamento por faixa de ISO."""
+        caminhos_selecionados = set(self._caminhos_selecionados())
         for item in self.arvore.get_children():
             self.arvore.delete(item)
         self._item_para_caminho.clear()
+        termo = self.var_busca_fotos.get().strip().casefold()
         ordem = (
             "ISO baixo (até 800)",
             "ISO médio (801–1600)",
@@ -799,7 +875,10 @@ class AplicativoEditorRaw(tk.Tk):
         )
         grupos: dict[str, list[FotoProjeto]] = {nome: [] for nome in ordem}
         for foto in self._fotos.values():
+            if termo and termo not in foto.caminho.name.casefold():
+                continue
             grupos[faixa_iso(iso=foto.iso)].append(foto)
+        total_exibidas = sum(len(fotos) for fotos in grupos.values())
         for nome_grupo in ordem:
             fotos = sorted(
                 grupos[nome_grupo], key=lambda item: item.caminho.name.lower()
@@ -810,17 +889,73 @@ class AplicativoEditorRaw(tk.Tk):
                 "",
                 "end",
                 text=f"{nome_grupo} ({len(fotos)})",
-                values=("",),
+                values=("", ""),
                 open=True,
             )
             for foto in fotos:
+                status = "✓ Editada" if foto.caminho in self._fotos_editadas else ""
                 item = self.arvore.insert(
                     grupo,
                     "end",
                     text=foto.caminho.name,
-                    values=(foto.iso or "—",),
+                    values=(foto.iso or "—", status),
                 )
                 self._item_para_caminho[item] = foto.caminho
+        itens_selecionados = [
+            item
+            for item, caminho in self._item_para_caminho.items()
+            if caminho in caminhos_selecionados
+            or (not caminhos_selecionados and caminho == self._foto_atual)
+        ]
+        if itens_selecionados:
+            self.arvore.selection_set(*itens_selecionados)
+            self.arvore.see(itens_selecionados[0])
+        if termo:
+            rotulo_resultado = "resultado" if total_exibidas == 1 else "resultados"
+            self.var_resultado_busca.set(f"{total_exibidas} {rotulo_resultado}")
+        else:
+            self.var_resultado_busca.set("Digite parte do nome ou somente o número.")
+
+    def _busca_alterada(self, *_argumentos: str) -> None:
+        """Filtra a árvore imediatamente conforme o texto informado."""
+        self._reconstruir_arvore()
+
+    def _limpar_busca(self, _evento: tk.Event[tk.Misc] | None = None) -> str:
+        """Limpa o campo de busca e volta a exibir todas as fotografias."""
+        self.var_busca_fotos.set("")
+        self.entrada_busca_fotos.focus_set()
+        return "break"
+
+    def _atualizar_contagem(self) -> None:
+        """Atualiza o total carregado e quantas fotos possuem edição."""
+        total = len(self._fotos)
+        total_editadas = len(self._fotos_editadas)
+        rotulo_fotos = "foto" if total == 1 else "fotos"
+        rotulo_editadas = "editada" if total_editadas == 1 else "editadas"
+        self.var_contagem.set(
+            f"{total} {rotulo_fotos} · {total_editadas} {rotulo_editadas}"
+        )
+
+    def _marcar_foto_editada(self, caminho: Path) -> None:
+        """Marca uma fotografia como editada e atualiza sua linha."""
+        self._fotos_editadas.add(caminho)
+        self._atualizar_status_foto(caminho=caminho)
+
+    def _desmarcar_foto_editada(self, caminho: Path) -> None:
+        """Remove a marca de edição de uma fotografia."""
+        self._fotos_editadas.discard(caminho)
+        self._atualizar_status_foto(caminho=caminho)
+
+    def _atualizar_status_foto(self, caminho: Path) -> None:
+        """Sincroniza a coluna de status e a contagem de fotos editadas."""
+        foto = self._fotos.get(caminho)
+        if foto is not None:
+            for item, caminho_item in self._item_para_caminho.items():
+                if caminho_item == caminho:
+                    status = "✓ Editada" if caminho in self._fotos_editadas else ""
+                    self.arvore.item(item, values=(foto.iso or "—", status))
+                    break
+        self._atualizar_contagem()
 
     def _selecionar_na_arvore(self, _evento: tk.Event[tk.Misc]) -> None:
         """Carrega a primeira foto real da seleção."""
@@ -848,6 +983,8 @@ class AplicativoEditorRaw(tk.Tk):
         self.rotulo_iso.configure(
             text=f"ISO {foto.iso or 'não identificado'} · {faixa_iso(iso=foto.iso)}",
         )
+        sugerido = preset_recomendado(iso=foto.iso)
+        self.var_preset_sugerido.set(f"Sugestão para esta foto: {sugerido}")
         self._carregar_controles(ajustes=self._ajustes[caminho])
         self._atualizar_lista_camadas()
         self._agendar_preview_imediato()
@@ -857,6 +994,7 @@ class AplicativoEditorRaw(tk.Tk):
         self._carregando_controles = True
         self.var_preset.set(ajustes.preset)
         self.var_exposicao.set(ajustes.exposicao)
+        self.var_brilho.set(ajustes.brilho)
         self.var_contraste.set(ajustes.contraste)
         self.var_realces.set(ajustes.realces)
         self.var_sombras.set(ajustes.sombras)
@@ -871,6 +1009,7 @@ class AplicativoEditorRaw(tk.Tk):
         return AjustesFoto(
             preset=self.var_preset.get(),
             exposicao=float(self.var_exposicao.get()),
+            brilho=int(self.var_brilho.get()),
             contraste=int(self.var_contraste.get()),
             realces=int(self.var_realces.get()),
             sombras=int(self.var_sombras.get()),
@@ -882,11 +1021,15 @@ class AplicativoEditorRaw(tk.Tk):
 
     def _preset_alterado(self, _evento: tk.Event[tk.Misc]) -> None:
         """Aplica o preset escolhido somente à foto atual."""
-        nome = self.var_preset.get()
+        self._aplicar_preset(nome=self.var_preset.get())
+
+    def _aplicar_preset(self, nome: str) -> None:
+        """Aplica um preset pelo seletor ou pelos atalhos de acesso rápido."""
         ajustes = AJUSTES_PADRAO[nome]
         self._carregar_controles(ajustes=ajustes)
         if self._foto_atual is not None:
             self._ajustes[self._foto_atual] = ajustes
+            self._marcar_foto_editada(caminho=self._foto_atual)
             self._agendar_preview()
 
     def _controle_alterado(self, _valor: str) -> None:
@@ -896,18 +1039,34 @@ class AplicativoEditorRaw(tk.Tk):
         ajustes = self._ler_controles().copiar(preset="Personalizado")
         self.var_preset.set("Personalizado")
         self._ajustes[self._foto_atual] = ajustes
+        self._marcar_foto_editada(caminho=self._foto_atual)
         self._agendar_preview()
 
-    def _restaurar_preset(self) -> None:
-        """Restaura o preset sugerido para a foto atual."""
+    def _aplicar_preset_sugerido(self) -> None:
+        """Aplica o preset sugerido para a foto atual."""
         if self._foto_atual is None:
             return
         iso = self._fotos[self._foto_atual].iso
         nome = preset_recomendado(iso=iso)
         ajustes = AJUSTES_PADRAO[nome]
         self._ajustes[self._foto_atual] = ajustes
+        self._marcar_foto_editada(caminho=self._foto_atual)
         self._carregar_controles(ajustes=ajustes)
         self._agendar_preview_imediato()
+
+    def _descartar_edicao_atual(self) -> None:
+        """Remove todos os ajustes e camadas da fotografia atual."""
+        caminho = self._foto_atual
+        if caminho is None:
+            return
+        ajustes = AJUSTES_PADRAO["Sem ajustes"]
+        self._ajustes[caminho] = ajustes
+        self._camadas_mascara.pop(caminho, None)
+        self._desmarcar_foto_editada(caminho=caminho)
+        self._carregar_controles(ajustes=ajustes)
+        self._atualizar_lista_camadas()
+        self._agendar_preview_imediato()
+        self.var_status.set(f"Edição de {caminho.name} descartada.")
 
     def _nova_camada(self) -> None:
         """Solicita um nome e abre o editor para uma nova camada."""
@@ -981,6 +1140,7 @@ class AplicativoEditorRaw(tk.Tk):
         """Adiciona a nova camada à fotografia correspondente."""
         camadas = self._camadas_mascara.setdefault(caminho, [])
         camadas.append(CamadaMascara(nome=nome, mascara=mascara, ajustes=ajustes))
+        self._marcar_foto_editada(caminho=caminho)
         if caminho == self._foto_atual:
             self._atualizar_lista_camadas(indice_selecionado=len(camadas) - 1)
             self._agendar_preview_imediato()
@@ -1002,6 +1162,7 @@ class AplicativoEditorRaw(tk.Tk):
             mascara=mascara,
             ajustes=ajustes,
         )
+        self._marcar_foto_editada(caminho=caminho)
         if caminho == self._foto_atual:
             self._atualizar_lista_camadas(indice_selecionado=indice)
             self._agendar_preview_imediato()
@@ -1055,6 +1216,7 @@ class AplicativoEditorRaw(tk.Tk):
         camadas.pop(indice)
         if not camadas:
             self._camadas_mascara.pop(caminho, None)
+        self._marcar_foto_editada(caminho=caminho)
         proximo_indice = min(indice, len(camadas) - 1) if camadas else None
         self._atualizar_lista_camadas(indice_selecionado=proximo_indice)
         self._agendar_preview_imediato()
@@ -1192,16 +1354,14 @@ class AplicativoEditorRaw(tk.Tk):
                 if base_cache is not None
                 else revelar_raw(caminho=caminho, iso=foto.iso, preview=True)
             )
-            editada = aplicar_edicao_completa(
-                imagem=base,
+            original_exibicao = base.copy()
+            original_exibicao.thumbnail(tamanho_preview, Image.Resampling.LANCZOS)
+            editada_exibicao = aplicar_edicao_completa(
+                imagem=original_exibicao,
                 ajustes=ajustes,
                 iso=foto.iso,
                 camadas=camadas_trabalho,
             )
-            original_exibicao = base.copy()
-            editada_exibicao = editada.copy()
-            original_exibicao.thumbnail(tamanho_preview, Image.Resampling.LANCZOS)
-            editada_exibicao.thumbnail(tamanho_preview, Image.Resampling.LANCZOS)
             return base, original_exibicao, editada_exibicao
 
         futuro = self._executor.submit(trabalho)
@@ -1275,6 +1435,7 @@ class AplicativoEditorRaw(tk.Tk):
         ajustes = self._ajustes[self._foto_atual]
         for caminho in caminhos:
             self._ajustes[caminho] = ajustes
+            self._marcar_foto_editada(caminho=caminho)
         self.var_status.set(f"Ajustes copiados para {len(caminhos)} foto(s).")
 
     def _copiar_para_todas(self) -> None:
@@ -1284,6 +1445,7 @@ class AplicativoEditorRaw(tk.Tk):
         ajustes = self._ajustes[self._foto_atual]
         for caminho in self._fotos:
             self._ajustes[caminho] = ajustes
+            self._marcar_foto_editada(caminho=caminho)
         self.var_status.set(f"Ajustes copiados para todas as {len(self._fotos)} fotos.")
 
     def _navegar(self, delta: int) -> None:
@@ -1305,6 +1467,7 @@ class AplicativoEditorRaw(tk.Tk):
         for caminho in caminhos:
             self._fotos.pop(caminho, None)
             self._ajustes.pop(caminho, None)
+            self._fotos_editadas.discard(caminho)
             self._camadas_mascara.pop(caminho, None)
             self._cache_preview.pop(caminho, None)
         if self._foto_atual in caminhos:
@@ -1315,7 +1478,7 @@ class AplicativoEditorRaw(tk.Tk):
             self.preview_editada.configure(image="", text="Os ajustes aparecerão aqui")
             self._atualizar_lista_camadas()
         self._reconstruir_arvore()
-        self.var_contagem.set(f"{len(self._fotos)} fotos")
+        self._atualizar_contagem()
         self.var_status.set(
             f"{len(caminhos)} foto(s) removida(s) do projeto; nenhum arquivo foi apagado.",
         )
@@ -1349,11 +1512,16 @@ class AplicativoEditorRaw(tk.Tk):
             caminhos = [self._foto_atual]
         self._iniciar_exportacao(caminhos=caminhos)
 
-    def _exportar_todas(self) -> None:
-        """Exporta todas as fotos carregadas."""
-        self._iniciar_exportacao(
-            caminhos=sorted(self._fotos, key=lambda item: item.name.lower()),
-        )
+    def _exportar_editadas(self) -> None:
+        """Exporta somente fotografias marcadas como editadas."""
+        caminhos = sorted(self._fotos_editadas, key=lambda item: item.name.lower())
+        if not caminhos:
+            messagebox.showinfo(
+                "Nenhuma foto editada",
+                "Edite ao menos uma foto antes de iniciar esta exportação.",
+            )
+            return
+        self._iniciar_exportacao(caminhos=caminhos)
 
     def _iniciar_exportacao(self, caminhos: list[Path]) -> None:
         """Inicia exportação sequencial em segundo plano."""
@@ -1483,7 +1651,7 @@ class AplicativoEditorRaw(tk.Tk):
         estado_exportar = "disabled" if ativa else "normal"
         estado_cancelar = "normal" if ativa else "disabled"
         self.botao_exportar_selecionadas.configure(state=estado_exportar)
-        self.botao_exportar_todas.configure(state=estado_exportar)
+        self.botao_exportar_editadas.configure(state=estado_exportar)
         self.botao_cancelar_exportacao.configure(state=estado_cancelar)
         if ativa:
             self.botao_cancelar_modal.configure(state="normal")

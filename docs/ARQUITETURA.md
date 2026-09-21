@@ -42,12 +42,12 @@ build.ps1 ─────── testes, empacotamento e metadados do release
 
 1. A interface recebe caminhos escolhidos pelo usuário.
 2. `processamento.obter_iso()` lê os metadados.
-3. `presets.preset_recomendado()` define o ponto de partida.
-4. A interface guarda um `AjustesFoto` para cada `FotoProjeto`.
-5. O preview revela o RAW em meia resolução e aplica os ajustes em memória.
+3. `presets.preset_recomendado()` informa uma sugestão sem alterar a fotografia.
+4. A interface inicia cada `FotoProjeto` em **Sem ajustes** e registra separadamente quais fotos foram editadas.
+5. O preview revela o RAW em meia resolução, mantém essa base em cache e aplica os ajustes somente no tamanho visível.
 6. Cada `CamadaMascara` é redimensionada e aplicada na ordem exibida na interface.
 7. Cada camada mantém nome, seleção e efeito próprios.
-8. A exportação revela novamente em resolução total e reaplica todas as camadas.
+8. A exportação principal usa apenas fotos marcadas como editadas, revela novamente em resolução total e reaplica todas as camadas.
 9. `nome_destino_seguro()` impede a substituição de uma exportação existente.
 10. O RAW nunca é aberto para escrita.
 

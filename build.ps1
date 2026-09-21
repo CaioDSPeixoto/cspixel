@@ -1,11 +1,16 @@
 param(
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [string]$Saida = "dist"
 )
 
 $pastaProjeto = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pastaAmbiente = Join-Path $pastaProjeto ".venv"
 $executavelPython = Join-Path $pastaAmbiente "Scripts\python.exe"
-$pastaDistribuicao = Join-Path $pastaProjeto "dist"
+$pastaDistribuicao = if ([System.IO.Path]::IsPathRooted($Saida)) {
+    $Saida
+} else {
+    Join-Path $pastaProjeto $Saida
+}
 $caminhoExecutavel = Join-Path $pastaDistribuicao "EditorRAW.exe"
 
 $processoAberto = Get-Process -Name "EditorRAW" -ErrorAction SilentlyContinue |

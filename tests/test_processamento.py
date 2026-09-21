@@ -13,12 +13,14 @@ PASTA_PROJETO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PASTA_PROJETO))
 
 from efeitos import EFEITO_PB_SELECAO, EFEITO_SATURAR_SELECAO  # noqa: E402
-from modelos import AjustesMascara, CamadaMascara  # noqa: E402
+from modelos import AjustesFoto, AjustesMascara, CamadaMascara  # noqa: E402
 from presets import AJUSTES_PADRAO, preset_recomendado  # noqa: E402
 from processamento import (  # noqa: E402
     QUALIDADE_JPEG,
+    _cena_subexposta,
     aplicar_ajustes,
     aplicar_edicao_completa,
+    criar_preview,
     exportar_foto,
     faixa_iso,
     nome_destino_seguro,
@@ -46,9 +48,42 @@ class TesteProcessamento(unittest.TestCase):
 
     def test_preset_recomendado_considera_iso(self) -> None:
         """Recomenda redução mais forte para ISO elevado."""
-        self.assertEqual(preset_recomendado(iso=6400), "Menos ruído")
+        self.assertEqual(preset_recomendado(iso=6400), "Redução forte de ruído")
+        self.assertEqual(preset_recomendado(iso=3200), "Menos ruído")
         self.assertEqual(preset_recomendado(iso=1600), "Natural")
         self.assertEqual(preset_recomendado(iso=400), "Retrato")
+
+    def test_presets_combinam_cores_vivas_e_reducao_de_ruido(self) -> None:
+        """Oferece combinações equilibrada e forte para os ajustes favoritos."""
+        equilibrado = AJUSTES_PADRAO["Cores vivas + menos ruído"]
+        forte = AJUSTES_PADRAO["Cores vivas + redução forte"]
+        self.assertGreater(equilibrado.saturacao, 0)
+        self.assertGreaterEqual(equilibrado.reducao_ruido, 80)
+        self.assertGreater(forte.saturacao, 0)
+        self.assertGreaterEqual(forte.reducao_ruido, 90)
+
+    def test_deteccao_de_cena_subexposta_ignora_realces_isolados(self) -> None:
+        """Clareia uma cena escura mesmo quando há poucos pontos muito claros."""
+        mosaico = np.full((80, 80), 2500, dtype=np.uint16)
+        mosaico[:4, :] = 15360
+        self.assertTrue(
+            _cena_subexposta(
+                mosaico=mosaico,
+                nivel_preto=2047,
+                nivel_branco=15360,
+            )
+        )
+
+    def test_deteccao_de_cena_clara_preserva_realces(self) -> None:
+        """Evita compensação automática quando a cena já contém muita luz."""
+        mosaico = np.full((80, 80), 9000, dtype=np.uint16)
+        self.assertFalse(
+            _cena_subexposta(
+                mosaico=mosaico,
+                nivel_preto=2047,
+                nivel_branco=15360,
+            )
+        )
 
     def test_qualidade_jpeg_e_alta_e_fixa(self) -> None:
         """Mantém a exportação JPEG em nível visualmente excelente."""
@@ -101,6 +136,56 @@ class TesteProcessamento(unittest.TestCase):
         self.assertEqual(resultado.size, imagem.size)
         self.assertEqual(resultado.mode, "RGB")
 
+    def test_reducao_de_ruido_preserva_borda_e_limpa_areas_planas(self) -> None:
+        """Suaviza o grão sem apagar a separação entre áreas distintas."""
+        gerador = np.random.default_rng(seed=123)
+        base = np.zeros((128, 128, 3), dtype=np.float32)
+        base[:, :64] = 50
+        base[:, 64:] = 180
+        matriz = np.clip(
+            base + gerador.normal(loc=0, scale=22, size=base.shape),
+            0,
+            255,
+        ).astype(np.uint8)
+        imagem = Image.fromarray(matriz, mode="RGB")
+        ajustes = AJUSTES_PADRAO["Sem ajustes"].copiar(reducao_ruido=96)
+        resultado = np.asarray(
+            aplicar_ajustes(imagem=imagem, ajustes=ajustes, iso=6400),
+            dtype=np.float32,
+        )
+        ruido_antes = float(np.std(matriz[:, 8:56]))
+        ruido_depois = float(np.std(resultado[:, 8:56]))
+        borda_antes = float(np.mean(matriz[:, 72:120]) - np.mean(matriz[:, 8:56]))
+        borda_depois = float(
+            np.mean(resultado[:, 72:120]) - np.mean(resultado[:, 8:56])
+        )
+        self.assertLess(ruido_depois, ruido_antes * 0.45)
+        self.assertGreater(borda_depois, borda_antes * 0.90)
+
+    def test_controle_de_ruido_aumenta_o_efeito_progressivamente(self) -> None:
+        """Mantém o slider proporcional entre a redução leve e a forte."""
+        gerador = np.random.default_rng(seed=321)
+        matriz = np.clip(
+            90 + gerador.normal(loc=0, scale=24, size=(96, 96, 3)),
+            0,
+            255,
+        ).astype(np.uint8)
+        imagem = Image.fromarray(matriz, mode="RGB")
+        leve = aplicar_ajustes(
+            imagem=imagem,
+            ajustes=AJUSTES_PADRAO["Sem ajustes"].copiar(reducao_ruido=20),
+            iso=6400,
+        )
+        forte = aplicar_ajustes(
+            imagem=imagem,
+            ajustes=AJUSTES_PADRAO["Sem ajustes"].copiar(reducao_ruido=90),
+            iso=6400,
+        )
+        self.assertGreater(
+            float(np.std(np.asarray(leve))),
+            float(np.std(np.asarray(forte))),
+        )
+
     def test_aplicar_ajustes_nao_altera_imagem_de_origem(self) -> None:
         """Mantém os pixels da imagem recebida intactos."""
         matriz = np.full((30, 50, 3), 110, dtype=np.uint8)
@@ -112,6 +197,55 @@ class TesteProcessamento(unittest.TestCase):
             iso=800,
         )
         np.testing.assert_array_equal(np.asarray(imagem), pixels_antes)
+
+    def test_criar_preview_aplica_ajustes_no_tamanho_visivel(self) -> None:
+        """Evita processar filtros em pixels que não serão exibidos."""
+        imagem = Image.new("RGB", (4000, 3000), color=(100, 100, 100))
+        with patch("processamento.revelar_raw", return_value=imagem):
+            original, editada = criar_preview(
+                caminho=Path("IMG_0100.CR2"),
+                ajustes=AJUSTES_PADRAO["Natural"],
+                iso=800,
+                tamanho_maximo=(400, 300),
+            )
+        self.assertEqual(original.size, (400, 300))
+        self.assertEqual(editada.size, (400, 300))
+
+    def test_brilho_altera_luminancia_sem_mudar_dimensoes(self) -> None:
+        """Clareia ou escurece a foto sem alterar seu tamanho."""
+        imagem = Image.new("RGB", (60, 40), color=(100, 100, 100))
+        escura = aplicar_ajustes(
+            imagem=imagem,
+            ajustes=AjustesFoto(
+                preset="Personalizado",
+                brilho=-40,
+                contraste=0,
+                realces=0,
+                sombras=0,
+                saturacao=0,
+                reducao_ruido=0,
+                nitidez=0,
+            ),
+            iso=400,
+        )
+        clara = aplicar_ajustes(
+            imagem=imagem,
+            ajustes=AjustesFoto(
+                preset="Personalizado",
+                brilho=40,
+                contraste=0,
+                realces=0,
+                sombras=0,
+                saturacao=0,
+                reducao_ruido=0,
+                nitidez=0,
+            ),
+            iso=400,
+        )
+        self.assertEqual(escura.size, imagem.size)
+        self.assertEqual(clara.size, imagem.size)
+        self.assertLess(int(np.asarray(escura)[20, 20, 0]), 100)
+        self.assertGreater(int(np.asarray(clara)[20, 20, 0]), 100)
 
     def test_mascara_mantem_selecao_colorida_e_fundo_pb(self) -> None:
         """Preserva cor apenas onde a máscara está branca."""
@@ -129,8 +263,9 @@ class TesteProcessamento(unittest.TestCase):
             mascara=mascara,
             ajustes_mascara=AjustesMascara(suavizacao=0),
         )
-        pixel_selecionado = resultado.getpixel((10, 20))
-        pixel_fundo = resultado.getpixel((70, 20))
+        matriz_resultado = np.asarray(resultado)
+        pixel_selecionado = matriz_resultado[20, 10]
+        pixel_fundo = matriz_resultado[20, 70]
         self.assertNotEqual(pixel_selecionado[0], pixel_selecionado[1])
         self.assertEqual(pixel_fundo[0], pixel_fundo[1])
         self.assertEqual(pixel_fundo[1], pixel_fundo[2])
@@ -170,8 +305,9 @@ class TesteProcessamento(unittest.TestCase):
             iso=400,
             camadas=camadas,
         )
-        pixel_esquerdo = resultado.getpixel((10, 20))
-        pixel_direito = resultado.getpixel((70, 20))
+        matriz_resultado = np.asarray(resultado)
+        pixel_esquerdo = matriz_resultado[20, 10]
+        pixel_direito = matriz_resultado[20, 70]
         self.assertEqual(pixel_esquerdo[0], pixel_esquerdo[1])
         self.assertEqual(pixel_esquerdo[1], pixel_esquerdo[2])
         self.assertNotEqual(pixel_direito[0], pixel_direito[1])

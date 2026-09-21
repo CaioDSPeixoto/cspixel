@@ -12,15 +12,17 @@ Ao baixar o código-fonte pelo GitHub, gere o executável com `build.ps1` confor
 
 - Abre vários arquivos RAW de uma vez (`CR2`, `CR3`, `NEF`, `ARW`, `DNG`, `ORF`, `RW2` e `RAF`).
 - Agrupa as fotos automaticamente por faixa de ISO.
-- Sugere um preset inicial conforme o ISO.
+- Busca instantaneamente uma foto pelo nome ou número sem removê-la do projeto.
+- Sugere um preset conforme o ISO sem aplicá-lo automaticamente.
 - Exibe o original revelado e o resultado editado lado a lado.
-- Permite alterar exposição, contraste, realces, sombras, saturação, temperatura, redução de ruído e nitidez.
+- Permite alterar exposição, brilho, contraste, realces, sombras, saturação, temperatura, redução de ruído e nitidez.
 - Mantém ajustes individuais para cada foto.
+- Identifica cada fotografia alterada com `✓ Editada` e permite descartar sua edição.
 - Permite criar várias camadas locais por pincel, borracha ou contorno.
 - Permite nomear, editar, renomear e excluir cada camada separadamente.
 - Aplica preto e branco, saturação ou desfoque somente dentro ou fora da seleção.
 - Copia os ajustes da foto atual para uma seleção ou para todas as fotos.
-- Exporta em JPEG ou PNG, sempre para uma pasta nova.
+- Exporta somente as fotos editadas em JPEG ou PNG, sempre para uma pasta nova.
 - Exporta JPEG sempre em qualidade máxima 100 e cores 4:4:4; PNG permanece sem perdas.
 - Incorpora o perfil de cor sRGB nas imagens exportadas.
 - Nunca altera ou substitui o RAW original.
@@ -30,12 +32,13 @@ Ao baixar o código-fonte pelo GitHub, gere o executável com `build.ps1` confor
 1. Abra `EditorRAW.exe`.
 2. Clique em **Selecionar RAWs** ou **Adicionar pasta**.
 3. Escolha uma foto na lista à esquerda.
-4. Selecione um preset e use os controles manuais.
+   Use a busca acima da lista quando quiser localizar rapidamente um número.
+4. Aplique o preset sugerido, escolha outro preset ou use os controles manuais.
 5. Confira o resultado no painel **Preview dos ajustes**.
 6. Em **Camadas locais**, crie e gerencie seleções com efeitos independentes.
 7. Use **Copiar para fotos selecionadas** ou **Aplicar estes ajustes a todas**, se desejar.
 8. Escolha a pasta de saída.
-9. Exporte as fotos selecionadas ou todas.
+9. Clique em **Exportar somente editadas**. A seleção manual continua disponível como ação secundária.
 
 O programa cria automaticamente uma subpasta com nome semelhante a `EditorRAW_20260920_153000`. Se um nome de imagem já existir, ele acrescenta uma numeração em vez de substituir o arquivo.
 
@@ -43,10 +46,18 @@ O programa cria automaticamente uma subpasta com nome semelhante a `EditorRAW_20
 
 - Natural
 - Retrato
+- Retrato suave
+- Clarear foto escura
+- Recuperar áreas claras
 - Menos ruído
+- Redução forte de ruído
 - Fotos noturnas
 - Cores vivas
+- Cores vivas + menos ruído
+- Cores vivas + redução forte
+- Personagem em destaque
 - Preto e branco
+- Preto e branco forte
 - Sem ajustes
 
 ## Desenvolvimento
@@ -85,6 +96,9 @@ O script valida sintaxe, executa os testes, gera o executável e registra versã
 
 ## Observações
 
-- O preview usa meia resolução para responder mais rápido.
+- O RAW de preview é revelado em meia resolução, armazenado em cache e tratado apenas no tamanho visível.
+- A revelação automática preserva realces; use **Brilho**, **Exposição** e **Realces** para correções manuais.
 - A exportação sempre revela o RAW novamente em resolução total.
 - Fotografias de ISO muito alto podem manter alguma granulação para preservar detalhes naturais.
+- **Menos ruído** mantém mais textura; **Redução forte de ruído** prioriza a limpeza em ISO muito alto.
+- Os presets **Cores vivas** e **Menos ruído**, além da combinação dos dois, possuem botões de acesso rápido.

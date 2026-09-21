@@ -2,6 +2,66 @@
 
 Este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## 0.8.2 — 2026-09-20
+
+### Adicionado
+
+- Busca instantânea por nome completo ou número da fotografia.
+- Contador de resultados e botão para limpar o filtro.
+- Atalho `Ctrl+F` para acessar a busca e tecla Esc para limpá-la.
+
+### Mantido
+
+- Agrupamento por ISO, seleção atual e marca `✓ Editada` durante a filtragem.
+
+## 0.8.1 — 2026-09-20
+
+### Adicionado
+
+- Acesso rápido de um clique aos presets **Cores vivas** e **Menos ruído**.
+- Presets combinados **Cores vivas + menos ruído** e **Cores vivas + redução forte**.
+
+## 0.8.0 — 2026-09-20
+
+### Adicionado
+
+- Presets **Retrato suave**, **Clarear foto escura** e **Recuperar áreas claras**.
+- Presets **Redução forte de ruído**, **Personagem em destaque** e **Preto e branco forte**.
+- Recomendação de redução forte para fotografias em ISO 6400 ou superior.
+
+### Alterado
+
+- Redução de ruído agora trata separadamente ruído de cor e de luminância em múltiplas intensidades.
+- Áreas planas e sombras recebem limpeza mais forte, preservando bordas e detalhes.
+- Controle de redução de ruído passa a responder proporcionalmente em toda a faixa.
+- Nitidez adapta sua intensidade para não reintroduzir o grão removido.
+- Detecção de pixels coloridos isolados passou a incluir desvios vermelhos, azuis e verdes.
+
+## 0.7.1 — 2026-09-20
+
+### Corrigido
+
+- Cenas subexpostas voltam a receber compensação automática de luminosidade.
+- A compensação agora considera a distribuição do RAW: fotos escuras são clareadas, enquanto cenas com grandes áreas claras preservam os realces.
+
+## 0.7.0 — 2026-09-20
+
+### Adicionado
+
+- Controle manual de brilho para clarear ou escurecer cada fotografia.
+- Marca `✓ Editada` na listagem e contador de fotografias editadas.
+- Ação para descartar os ajustes e as camadas da fotografia atual.
+- Preset recomendado exibido como sugestão, sem modificar automaticamente a foto.
+
+### Alterado
+
+- Preview processado diretamente no tamanho visível, reduzindo o tempo dos filtros.
+- Revelação rápida usa demosaico leve e cache; a exportação mantém o processamento completo.
+- Brilho automático agressivo do RAW foi desativado para preservar áreas claras.
+- Fotografias importadas começam em **Sem ajustes**.
+- A exportação principal processa somente as fotografias marcadas como editadas.
+- O build aceita uma pasta de saída alternativa quando outra versão está aberta.
+
 ## 0.6.0 — 2026-09-20
 
 ### Adicionado

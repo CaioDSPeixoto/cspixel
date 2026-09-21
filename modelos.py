@@ -22,6 +22,7 @@ class AjustesFoto:
 
     preset: str = "Natural"
     exposicao: float = 0.0
+    brilho: int = 0
     contraste: int = 6
     realces: int = -12
     sombras: int = 10
@@ -35,6 +36,7 @@ class AjustesFoto:
         *,
         preset: str | None = None,
         exposicao: float | None = None,
+        brilho: int | None = None,
         contraste: int | None = None,
         realces: int | None = None,
         sombras: int | None = None,
@@ -48,6 +50,7 @@ class AjustesFoto:
             self,
             preset=self.preset if preset is None else preset,
             exposicao=self.exposicao if exposicao is None else exposicao,
+            brilho=self.brilho if brilho is None else brilho,
             contraste=self.contraste if contraste is None else contraste,
             realces=self.realces if realces is None else realces,
             sombras=self.sombras if sombras is None else sombras,

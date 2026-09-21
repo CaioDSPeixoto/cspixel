@@ -23,6 +23,14 @@ Quando `python` não apontar para o Python 3.12:
 .\build.ps1 -Python "C:\caminho\para\python.exe"
 ```
 
+Se o executável padrão estiver aberto, gere uma versão paralela sem encerrar a sessão atual:
+
+```powershell
+.\build.ps1 -Saida "dist-0.7.0"
+```
+
+O parâmetro `-Saida` é opcional; sem ele, o destino continua sendo `dist`.
+
 ## O que o script executa
 
 1. Confirma que o executável anterior não está aberto.
@@ -55,9 +63,9 @@ O diretório `build/`, o arquivo `EditorRAW.spec` e `.venv/` são materiais loca
 1. Abra `dist/EditorRAW.exe`.
 2. Importe pelo menos um RAW de ISO baixo e um de ISO alto.
 3. Confirme o agrupamento por ISO.
-4. Altere um preset e um controle manual.
-5. Confirme a comparação original × preview.
-6. Exporte uma imagem JPEG.
+4. Confirme que a foto começa sem edição e aplique um preset ou controle manual.
+5. Confirme a marca `✓ Editada`, a comparação original × preview e a ação de descartar edição.
+6. Exporte as fotos editadas em JPEG.
 7. Confira resolução, cor e abertura do arquivo exportado; JPEG deve usar qualidade 100 e cores 4:4:4.
 8. Confirme que tamanho e data de modificação do RAW não mudaram.
 9. Feche o programa e confira se não ficou um processo `EditorRAW.exe` aberto.
