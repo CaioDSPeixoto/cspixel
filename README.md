@@ -100,5 +100,5 @@ O script valida sintaxe, executa os testes, gera o executável e registra versã
 - A revelação automática preserva realces; use **Brilho**, **Exposição** e **Realces** para correções manuais.
 - A exportação sempre revela o RAW novamente em resolução total.
 - Fotografias de ISO muito alto podem manter alguma granulação para preservar detalhes naturais.
-- **Menos ruído** mantém mais textura; **Redução forte de ruído** prioriza a limpeza em ISO muito alto.
+- **Menos ruído** aplica uma limpeza moderada e preserva textura; **Redução forte de ruído** prioriza a limpeza em ISO muito alto.
 - Os presets **Cores vivas** e **Menos ruído**, além da combinação dos dois, possuem botões de acesso rápido.

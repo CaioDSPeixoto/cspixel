@@ -58,9 +58,11 @@ class TesteProcessamento(unittest.TestCase):
         equilibrado = AJUSTES_PADRAO["Cores vivas + menos ruído"]
         forte = AJUSTES_PADRAO["Cores vivas + redução forte"]
         self.assertGreater(equilibrado.saturacao, 0)
-        self.assertGreaterEqual(equilibrado.reducao_ruido, 80)
+        self.assertGreaterEqual(equilibrado.reducao_ruido, 55)
         self.assertGreater(forte.saturacao, 0)
         self.assertGreaterEqual(forte.reducao_ruido, 90)
+        self.assertLess(equilibrado.reducao_ruido, forte.reducao_ruido - 20)
+        self.assertGreater(equilibrado.nitidez, forte.nitidez)
 
     def test_deteccao_de_cena_subexposta_ignora_realces_isolados(self) -> None:
         """Clareia uma cena escura mesmo quando há poucos pontos muito claros."""

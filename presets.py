@@ -58,8 +58,8 @@ AJUSTES_PADRAO: Final[dict[str, AjustesFoto]] = {
         realces=-14,
         sombras=6,
         saturacao=2,
-        reducao_ruido=82,
-        nitidez=20,
+        reducao_ruido=60,
+        nitidez=32,
     ),
     "Redução forte de ruído": AjustesFoto(
         preset="Redução forte de ruído",
@@ -96,8 +96,8 @@ AJUSTES_PADRAO: Final[dict[str, AjustesFoto]] = {
         sombras=8,
         saturacao=16,
         temperatura=2,
-        reducao_ruido=82,
-        nitidez=25,
+        reducao_ruido=60,
+        nitidez=32,
     ),
     "Cores vivas + redução forte": AjustesFoto(
         preset="Cores vivas + redução forte",

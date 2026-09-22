@@ -2,6 +2,15 @@
 
 Este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## 0.8.3 — 2026-09-20
+
+### Corrigido
+
+- Preset **Menos ruído** recalibrado para preservar pele, cabelo e texturas finas.
+- Preset **Cores vivas + menos ruído** usa a mesma redução moderada.
+- Suavização pesada passa a atuar apenas nas intensidades acima de 80.
+- Separação mais clara entre a redução moderada e a redução forte.
+
 ## 0.8.2 — 2026-09-20
 
 ### Adicionado

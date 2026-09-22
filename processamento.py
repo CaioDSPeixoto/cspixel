@@ -209,7 +209,7 @@ def _reduzir_ruido(
     matriz_luminancia = np.asarray(luminancia, dtype=np.float32)
     imagem_mediana_fina = luminancia.filter(ImageFilter.MedianFilter(size=3))
     mediana_fina = np.asarray(imagem_mediana_fina, dtype=np.float32)
-    peso_mediana_forte = np.clip((intensidade - 55) / 45.0, 0.0, 1.0)
+    peso_mediana_forte = np.clip((intensidade - 80) / 20.0, 0.0, 1.0)
     if peso_mediana_forte > 0:
         mediana_forte = np.asarray(
             imagem_mediana_fina.filter(ImageFilter.MedianFilter(size=3)),
